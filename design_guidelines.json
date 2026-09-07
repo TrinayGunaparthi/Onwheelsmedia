@@ -1,0 +1,94 @@
+{
+  "theme_strategy": {
+    "overall": "Dark Mode Only. Matches the night-time Indian street neon aesthetic, prevents screen glare inside autos, and creates a high-contrast environment.",
+    "marketing": "Archetype 7 (Electric & Neon) modified with 'Auto Rickshaw' colors. High-energy, immersive, motion-heavy.",
+    "dashboard": "Archetype 4 (Swiss & High-Contrast). Utilitarian, data-dense, technical grid structures with flat surfaces.",
+    "kiosk_player": "High-visibility, bold typography, distraction-free with animated tickers. Built for direct sunlight or dark transit environments."
+  },
+  "typography": {
+    "heading_font": "Clash Display or Cabinet Grotesk (for marketing impact and big numbers)",
+    "body_font": "Inter (for dense dashboard data and readable paragraphs)",
+    "mono_font": "JetBrains Mono (for device IDs, coordinates, technical metrics in the dashboard)",
+    "scale_rules": {
+      "marketing_h1": "text-5xl md:text-6xl tracking-tighter font-bold",
+      "dashboard_h1": "text-2xl md:text-3xl tracking-tight font-semibold",
+      "labels": "text-xs uppercase tracking-[0.2em]"
+    }
+  },
+  "colors": {
+    "background": "#09090b",
+    "surface": "#18181b",
+    "surface_hover": "#27272a",
+    "primary": "#FACC15",
+    "primary_foreground": "#09090b",
+    "secondary": "#06b6d4",
+    "success": "#22c55e",
+    "destructive": "#ef4444",
+    "text_primary": "#ffffff",
+    "text_secondary": "#a1a1aa",
+    "border": "#27272a"
+  },
+  "visual_enhancers": {
+    "surfaces": "Grid Borders for Dashboards (border-collapse style, 1px solid #27272a). Glassmorphism (bg-zinc-900/70 backdrop-blur-xl border border-white/10) for Sticky Headers and Kiosk overlays.",
+    "lighting": "Subtle yellow drop-shadows on primary buttons (drop-shadow-[0_0_8px_rgba(250,204,21,0.5)]) for Marketing CTA.",
+    "textures": "Subtle noise overlay on the marketing hero background to feel like gritty urban transit."
+  },
+  "layouts": {
+    "marketing": "Bento Grid (Tetris Mode) with wide gaps (gap-8), asymmetric overlapping elements.",
+    "dashboard": "High-density Grid. Dense sidebars, border-r on layout, tight spacing (gap-4). Every pixel utilized, max-h-screen for main app frame to allow internal scrolling.",
+    "kiosk_player": "Absolute positioning for overlays (News/Weather on bottom, QR on top right) over a full-screen looping media."
+  },
+  "components": {
+    "buttons": "Pill-shaped (rounded-full) for Marketing. Sharp edges (rounded-none or rounded-sm) for Dashboard to feel technical.",
+    "cards": "Cardless design in Dashboard. Just direct grids with borders separating them. Hover state: slight lift and border color change.",
+    "tables": "Dense Shadcn tables. Hover on row changes bg to zinc-900.",
+    "charts": "Recharts. Use 'Auto Yellow' and 'Electric Cyan' for lines/bars. No grid lines, just axes for a clean look."
+  },
+  "motion": {
+    "marketing": "Framer Motion staggered entrances. Smooth scrolling. Tracing beam on key feature cards.",
+    "dashboard": "Minimal. Instant snappy feedback. Subtle background color shifts on hover.",
+    "kiosk": "React Fast Marquee for news/weather ticker at the bottom."
+  },
+  "accessibility": {
+    "contrast": "Ensure APCA standards. Black text on Auto Yellow is highly readable. White text on Zinc 950 is high contrast.",
+    "focus": "focus:ring-2 focus:ring-yellow-400 focus:outline-none focus:ring-offset-2 focus:ring-offset-zinc-950",
+    "interactive": "All buttons and links must have explicit hover colors. e.g. hover:bg-yellow-500",
+    "data_testid": "All interactive elements MUST include data-testid attribute for testing."
+  },
+  "image_urls": {
+    "marketing_hero_bg": {
+      "url": "https://images.unsplash.com/photo-1780318564560-ff2a8ebd8439?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwxfHxhdXRvJTIwcmlja3NoYXclMjBuZW9ufGVufDB8fHx8MTc4ODY5NDEzOHww&ixlib=rb-4.1.0&q=85",
+      "description": "Vibrant night street scene with neon lights (used as backdrop for marketing hero with heavy black gradient overlay)",
+      "category": "marketing_hero"
+    },
+    "auto_traffic_bg": {
+      "url": "https://images.unsplash.com/photo-1771575519680-a4066dfc82e2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHw0fHxhdXRvJTIwcmlja3NoYXclMjBuZW9ufGVufDB8fHx8MTc4ODY5NDEzOHww&ixlib=rb-4.1.0&q=85",
+      "description": "Auto rickshaw driving at night (used in 'For Drivers' section)",
+      "category": "driver_feature"
+    },
+    "player_mockup": {
+      "url": "https://images.unsplash.com/photo-1764795849694-34b3316b3de4?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTN8MHwxfHNlYXJjaHw0fHxkaWdpdGFsJTIwZGlzcGxheSUyMHNpZ258ZW58MHx8fHwxNzg4Njk0MTQyfDA&ixlib=rb-4.1.0&q=85",
+      "description": "People interacting with a digital display (used in 'For Advertisers' section to show engagement)",
+      "category": "advertiser_feature"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Prioritize custom HTML/Tailwind over Shadcn for the marketing landing page to ensure a creative, non-generic layout.",
+    "For dashboards, use Shadcn but customize borders to 1px solid zinc-800 and remove heavy card shadows. Use a flat, technical aesthetic.",
+    "For the Kiosk Player, ensure the layout is 100vh/100vw with absolute hidden overflow to simulate Android fullscreen mode.",
+    "Never use fully transparent backgrounds for headers or overlays if content scrolls beneath them. Use bg-zinc-900/80 backdrop-blur-md.",
+    "Avoid typical generic 'SaaS Blue'. Use the Auto Yellow (#FACC15) as the primary CTA color.",
+    "Use Phosphor icons or Lucide icons exclusively."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur) where necessary.",
+    "You MUST NOT apply universal transition. Eg: transition: all. This results in breaking transforms. Always add transitions for specific interactive elements.",
+    "You MUST NOT center align the app container, ie do not add .App { text-align: center; } in the css file.",
+    "Always use modern button styles like pill-shaped for marketing, or sharp technical buttons for dashboard.",
+    "NEVER use AI assistant Emoji characters like 🤖🧠💭💡🔮🎯 etc for icons.",
+    "Every interaction needs micro-animations - hover states, transitions, parallax effects, and entrance animations.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "All interactive and key informational elements MUST include a data-testid attribute to facilitate robust automated testing."
+  ]
+}

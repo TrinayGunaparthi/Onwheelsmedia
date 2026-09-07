@@ -1,0 +1,43 @@
+{
+  "summary": "First backend test iteration for On Wheels Media Phase 1 MVP. Wrote pytest suite (21 tests) covering full E2E flow: admin/advertiser/driver auth, driver+vehicle registration & approval, device registration & activation, upload/ads/campaigns lifecycle, admin news/weather/QR creation, player playlist/heartbeat/playback (single+batch), advertiser & admin reports, and role/auth guards. Initial run: 15/21 passed. Found and fixed a MongoDB _id (ObjectId) serialization bug affecting 5 create endpoints. Final run: 21/21 passed.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/campaigns, /api/admin/news, /api/admin/weather, /api/admin/qr, /api/payments/invoice, /api/admin/playlists", "issue": "Returned 500 due to leaking Mongo _id (ObjectId) in response. motor's insert_one mutates the doc in-place adding `_id`; endpoints returned `{**doc, id: ...}` without popping `_id`, causing FastAPI jsonable_encoder to fail with 'ObjectId object is not iterable'. FIXED by adding doc.pop('_id', None) before return.", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/devices/mine", "issue": "Contains dead placeholder code (async generator with `if False`) before the real logic. Works accidentally because control falls through to the second query, but the initial db.devices.find(...) is wasted. Cleanup recommended."},
+      {"endpoint": "GET /api/admin/reports/plays", "issue": "Uses ISO datetime string comparison with date-only bounds (e.g. '2026-01-20'). playback_events store full ISO timestamps like '2026-01-20T10:00:00+00:00' which compare correctly as strings, but this is brittle if timestamp format ever changes. Consider proper datetime range or UTC-normalised strings."},
+      {"endpoint": "auth cookies", "issue": "set_auth_cookies always sets samesite='none' + secure=True. Fine for HTTPS preview URL but will break for local http testing. Not blocking."},
+      {"endpoint": "POST /api/auth/register", "issue": "No brute-force/lockout, no forgot-password endpoint implemented; playbook items (5-fail lockout, forgot-password with sha256 token_hash) are not present. Not part of this phase's requested features but flagged."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_owm_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Consider cleaning up dead code in GET /api/devices/mine (placeholder query with `if False`).",
+    "Add pytest.ini fixture / server-side guard so that `insert_one` result pattern is consistent — recommend a helper like `insert_and_return(coll, doc)` to avoid future ObjectId-leak regressions.",
+    "Auth playbook items (brute-force lockout, forgot-password, refresh token endpoint) are missing — implement in later phase if required."
+  ],
+  "critical_code_review_comments": [
+    "Repeated pattern `{**doc, 'id': str(res.inserted_id)}` after `insert_one(doc)` is fragile because motor mutates doc with `_id`. Was the root cause of 6 endpoint 500s. Recommend a single helper.",
+    "server.py is 883 lines — should be split into routers (auth, drivers, devices, ads, campaigns, player, admin) for maintainability.",
+    "CORS uses `allow_origins=['*']` with `allow_credentials=True` — browsers reject this combination for cookie auth. Works for token-in-header but breaks cookie login from a real origin. Should echo Origin or use explicit FRONTEND_URL.",
+    "No rate limiting on /api/auth/login (brute force possible).",
+    "GET /api/files/{path:path} is public — anyone with a path can retrieve any advertiser's uploaded file. Fine for MVP but should be gated by role/ownership later.",
+    "player_playlist filters campaigns by both target_devices matching and empty list ($or) — device targeting works, but there's no per-frequency scheduling logic (frequency field on campaign is unused in playlist composition)."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (fixed _id leak in create_campaign, create_playlist, create_news, create_weather, create_qr, create_invoice)",
+    "/app/backend/tests/test_owm_backend.py (new file)"
+  ],
+  "success_rate": {"backend": "100% (21/21)", "frontend": "not tested"},
+  "test_credentials": "Admin: admin@onwheelsmedia.com / Admin@12345 (seeded on startup). Advertiser/Driver users created dynamically with TEST_ prefix.",
+  "seed_data_creation": "Tests create ephemeral TEST_ users, driver profile, vehicle, device, ad file, ad, campaign, news, weather config, QR campaign and playback events. Not cleaned up (MVP tests) — data persists in DB.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest at /app/backend/tests/test_owm_backend.py covers full E2E flow — reuse it. Runs against REACT_APP_BACKEND_URL. Weather returns mocked=true when OPENWEATHER_API_KEY empty (verified). Storage init requires EMERGENT_LLM_KEY (verified working, upload+serve tested). Device token JWT type='device' with 365-day exp. Frontend still needs testing.",
+  "rca of the issue": "MongoDB _id ObjectId leak: motor's `AsyncIOMotorCollection.insert_one(doc)` mutates `doc` in place, adding `_id: ObjectId(...)`. Six endpoints returned `{**doc, 'id': str(res.inserted_id)}` — the spread still carried `_id`. FastAPI's jsonable_encoder tries dict()/vars() on ObjectId and raises `TypeError: 'ObjectId' object is not iterable`, surfaced as 500. Fix: `doc.pop('_id', None)` before returning. Consistent with existing pattern in create_ad and register_device."
+}
