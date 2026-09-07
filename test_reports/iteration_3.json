@@ -1,0 +1,50 @@
+{
+  "summary": "Phase 2 backend testing complete. Added /app/backend/tests/test_owm_phase2_audience.py with 22 focused tests covering: admin privacy config GET/PATCH (defaults singleton + persistence + audit log entry via /admin/audit), player audience ingestion + admin aggregate (samples_count / estimated_viewers / avg_attention / age_distribution / gender_distribution / by_hour), camera_enabled=false gate returns {ok:false}, admin mini-games CRUD (quiz+spin create, list, delete, /games/list active-only for both admin & advertiser), full QR game session flow (POST /games/session increments plays; POST /games/complete increments completions & marks status=completed; GET /games/session/{sid} returns session+game; invalid sid 404), screen mirror init->authorize->poll (text + image_url whitelisted; other content types rejected 400; unknown token 404; expires_in=300), engagement analytics (qr_scans, game_starts, game_completions, mirror_sessions, mirror_authorized, completion_rate), advertiser analytics (impressions/audience/attention/age/gender/game_starts/completions/per_campaign), CSV export for all 4 kinds (campaigns/devices/audience/engagement) with correct content-type + attachment header, PDF export with %PDF magic bytes, bad kind/fmt return 400, campaign rules PATCH ownership (owner 200, non-owner 404), player playlist AI scoring (targeting_score present with audience params; backward-compat items list returned without params), bulk driver CSV import (imports 2 rows, 1 failed row for missing email, non-csv 400). Regression: full pytest run of Phase 1 (21) + Phase 1.5 (14) + Phase 2 (22) = 57/57 passing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/mirror/poll/{token}", "issue": "Truly expired tokens cannot be tested end-to-end because expires_at is fixed at 5min from insert; no admin knob to force expiry. Guard logic is present (expired flag in response) but only verified for the not-yet-expired path in this suite."},
+      {"endpoint": "POST /api/mirror/authorize", "issue": "Public endpoint (no auth) — anyone who guesses/leaks a token can push content to the player. Acceptable for the QR-based UX per spec, but consider rate-limiting or requiring device signature."},
+      {"endpoint": "POST /api/games/session and /api/games/complete", "issue": "Both are public/unauthenticated. Session_id is a UUID so brute-forcing is hard, but there is no check that complete comes from the same device/user that started it — a race/replay is possible."},
+      {"endpoint": "GET /api/admin/audience", "issue": "since = ISO string compared via $gte on stored ISO string; works because all writes use now_iso() (UTC, same format), but a device pushing localised timestamps would silently drop out of the window."},
+      {"endpoint": "GET /api/advertiser/analytics", "issue": "When the advertiser's campaigns have NO target_devices, the audience query falls back to `db.audience_samples.find()` across ALL devices → cross-tenant leakage of aggregated audience numbers into an advertiser's dashboard."},
+      {"endpoint": "GET /api/admin/reports/export?kind=audience", "issue": "Row projection uses r.get('device_code') on audience_samples, which stores 'device_code' only when the sample was ingested via the device path — legacy or synthetic docs would render empty."},
+      {"endpoint": "POST /api/admin/drivers/bulk", "issue": "Default password 'Owm@12345' is hardcoded and shared across all imported drivers — HIGH-ish for prod, but acceptable for MVP CSV bootstrap. Recommend forcing password reset on first login."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_owm_phase2_audience.py",
+    "/app/backend/tests/test_owm_phase2.py",
+    "/app/backend/tests/test_owm_backend.py",
+    "/app/test_reports/pytest/phase2b_results.xml",
+    "/app/test_reports/pytest/full_results.xml"
+  ],
+  "action_items": [
+    "Consider scoping /api/advertiser/analytics audience aggregation to devices the advertiser has actually run on — current fallback returns global audience when target_devices is empty.",
+    "Add per-device or per-user auth to /api/games/complete to prevent replay/spoofing of completion counts.",
+    "Force password reset on first login for drivers imported via /api/admin/drivers/bulk (currently all share the default 'Owm@12345').",
+    "Consider adding a device-signature or short-lived HMAC to /api/mirror/authorize; token in URL/QR is enough for MVP but should not be the only barrier.",
+    "server.py is now 1475 lines — split into routers (auth, drivers, devices, ads/campaigns, player, admin, phase2)."
+  ],
+  "critical_code_review_comments": [
+    "server.py grew to 1475 lines (was 1031 in iter_2) — routers/modularisation is now urgent, phase-2 alone added 400 lines.",
+    "CORS still allow_origins=['*'] + allow_credentials=True — invalid for cookie-based browser auth; bearer flow works so tests pass, but SPA cookie login will silently fail in strict browsers.",
+    "Cross-tenant leak in /advertiser/analytics: when campaigns[].target_devices is empty, the audience aggregate becomes global — the advertiser sees other advertisers' audience mixed in.",
+    "/games/session and /games/complete are unauthenticated — no session-owner check makes completion counts spoofable.",
+    "Reports export kind=audience projects 'device_code' but audience_samples aggregate view uses stored 'device_code' only when set by the ingest path — legacy docs will show blank cells; consider left-join / fallback via device_id lookup.",
+    "Bulk driver import defaults password to 'Owm@12345' with no forced reset — anyone reading source can log in as an imported driver.",
+    "Mirror authorize accepts content only for {'text','image_url'} but does not sanitise or validate the image_url (SSRF/beacon risk if player renders <img src=…> without CSP).",
+    "audience $gte on ISO strings: works because all writers use datetime.now(timezone.utc).isoformat() but is fragile across timezone-format changes; prefer a real datetime field and $gte on datetime."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_owm_phase2_audience.py (new, 22 tests)"
+  ],
+  "success_rate": {"backend": "100% (57/57: 21 phase-1 + 14 phase-1.5 + 22 phase-2)", "frontend": "not tested (backend-only per request)"},
+  "test_credentials": "Admin: admin@onwheelsmedia.com / Admin@12345. Test users/drivers/devices created with TEST_ / test_bulk_ prefixes inside each test.",
+  "seed_data_creation": "Ephemeral TEST_ users, drivers, vehicles, devices, ads, campaigns, games, audience_samples, game_sessions, mirror_sessions, privacy_config, audit_logs, plus test_bulk_ drivers via CSV import. Persists in DB — no automated cleanup.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Audit-logs endpoint is /api/admin/audit (NOT /admin/audit-logs). Privacy singleton doc uses _id='singleton' — GET creates it on first hit. camera_enabled=false makes /player/audience return {ok:false} without inserting. Mini-games /games/list is role-guarded via get_current_user (both admin & advertiser accepted). PATCH /api/campaigns/{cid}/rules ownership check uses user_id == advertiser_id — mismatched advertiser returns 404 (not 403). Player playlist accepts age_group/gender/attention/viewers query params and echoes them under audience_context. reportlab==4.2.0 already installed. Reports export is JSON-string dump for age/gender columns in audience CSV — expected. Bulk import default password 'Owm@12345' hardcoded — flagged as minor.",
+  "rca of the issue": "Only tester-side issue: initial run used /api/admin/audit-logs while server exposes /api/admin/audit → 404. Fixed by correcting the URL. No server-side bug."
+}

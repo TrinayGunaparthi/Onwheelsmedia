@@ -9,6 +9,7 @@ import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
 import PaymentSuccess from "@/pages/PaymentSuccess";
 import PaymentCancel from "@/pages/PaymentCancel";
+import GamePlayer from "@/pages/GamePlayer";
 import AdminApp from "@/pages/admin/AdminApp";
 import AdvertiserApp from "@/pages/advertiser/AdvertiserApp";
 import DriverApp from "@/pages/driver/DriverApp";
@@ -37,6 +38,7 @@ function App() {
             <Route path="/payment/success" element={<PaymentSuccess />} />
             <Route path="/payment/cancel" element={<PaymentCancel />} />
             <Route path="/player" element={<KioskPlayer />} />
+            <Route path="/play" element={<GamePlayer />} />
             <Route path="/admin/*" element={<Protected role="admin"><AdminApp /></Protected>} />
             <Route path="/advertiser/*" element={<Protected role="advertiser"><AdvertiserApp /></Protected>} />
             <Route path="/driver/*" element={<Protected role="driver"><DriverApp /></Protected>} />

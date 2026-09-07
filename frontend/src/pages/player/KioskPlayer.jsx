@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import api, { BACKEND_URL } from "@/lib/api";
+import { simulate, topKey } from "@/lib/audience";
 
 const HEARTBEAT_MS = 30000;
 const SYNC_MS = 60000;
+const AUDIENCE_MS = 30000;
 
 export default function KioskPlayer() {
   const [phase, setPhase] = useState("activate"); // activate | ready
@@ -13,7 +15,10 @@ export default function KioskPlayer() {
   const [idx, setIdx] = useState(0);
   const [error, setError] = useState("");
   const [online, setOnline] = useState(navigator.onLine);
+  const [audience, setAudience] = useState(null);
+  const [privacy, setPrivacy] = useState({ camera_enabled: true, show_camera_notice: true });
   const eventBuffer = useRef([]);
+  const audienceRef = useRef(null);
 
   useEffect(() => {
     if (deviceToken) setPhase("ready");
@@ -36,10 +41,18 @@ export default function KioskPlayer() {
     } catch (e) { setError(e.response?.data?.detail || "Invalid activation code"); }
   };
 
-  // Sync playlist
+  // Sync playlist — include audience context for AI dynamic ad selection
   const syncPlaylist = useCallback(async () => {
     try {
-      const { data } = await api.get("/player/playlist", { headers: authHeaders() });
+      const params = new URLSearchParams();
+      const a = audienceRef.current;
+      if (a) {
+        params.set("age_group", topKey(a.age_distribution));
+        params.set("gender", topKey(a.gender_distribution));
+        params.set("attention", String(a.attention_score));
+        params.set("viewers", String(a.viewers));
+      }
+      const { data } = await api.get(`/player/playlist?${params.toString()}`, { headers: authHeaders() });
       if (data.items?.length) {
         setPlaylist(data.items);
         localStorage.setItem("owm_playlist_cache", JSON.stringify(data.items));
@@ -75,6 +88,27 @@ export default function KioskPlayer() {
     const t = setInterval(send, HEARTBEAT_MS);
     return () => clearInterval(t);
   }, [phase, deviceCode, online, authHeaders]);
+
+  // Fetch privacy config once (respects admin toggles)
+  useEffect(() => {
+    if (phase !== "ready") return;
+    api.get("/player/privacy", { headers: authHeaders() }).then(r => setPrivacy(r.data)).catch(() => {});
+  }, [phase, authHeaders]);
+
+  // Audience sampler (privacy-first): local anonymous aggregation, never raw frames
+  useEffect(() => {
+    if (phase !== "ready") return;
+    if (privacy.camera_enabled === false) return;
+    const tick = async () => {
+      const sample = simulate();
+      setAudience(sample);
+      audienceRef.current = sample;
+      try { await api.post("/player/audience", sample, { headers: authHeaders() }); } catch {}
+    };
+    tick();
+    const t = setInterval(tick, AUDIENCE_MS);
+    return () => clearInterval(t);
+  }, [phase, privacy.camera_enabled, authHeaders]);
 
   const current = playlist[idx];
   const advance = useCallback(() => {
@@ -158,9 +192,30 @@ export default function KioskPlayer() {
       )}
 
       {/* Overlays */}
-      <div className="absolute top-4 right-4 bg-black/60 backdrop-blur px-3 py-2 rounded text-xs font-mono">
-        <span className="text-yellow-400">{deviceCode}</span> · <span className={online?"text-green-400":"text-red-400"}>{online?"ONLINE":"OFFLINE"}</span>
+      <div className="absolute top-4 right-4 bg-black/60 backdrop-blur px-3 py-2 rounded text-xs font-mono flex flex-col items-end gap-1" data-testid="player-overlay">
+        <div><span className="text-yellow-400">{deviceCode}</span> · <span className={online?"text-green-400":"text-red-400"}>{online?"ONLINE":"OFFLINE"}</span></div>
+        {audience && privacy.camera_enabled !== false && (
+          <div className="text-cyan-400" data-testid="audience-indicator">
+            👥 {audience.viewers} · ATT {audience.attention_score} · <span className="text-zinc-400">AI sim</span>
+          </div>
+        )}
       </div>
+      {/* Interactive game QR overlay when ad has interactive.type==="game" */}
+      {current?.type === "ad" && current.interactive?.type === "game" && (
+        <div className="absolute top-4 left-4 bg-white text-black p-3 rounded flex items-center gap-3" data-testid="game-qr-overlay">
+          <img alt="Play" className="w-24 h-24" src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(`${window.location.origin}/play?game_id=${current.interactive.game_id}&campaign_id=${current.campaign_id}&device_id=${deviceCode}`)}`} />
+          <div>
+            <div className="font-display font-bold text-lg">Scan to play</div>
+            <div className="text-xs">Win rewards!</div>
+          </div>
+        </div>
+      )}
+      {/* Privacy camera-use notice */}
+      {privacy.show_camera_notice !== false && privacy.camera_enabled !== false && (
+        <div className="absolute top-1/2 -translate-y-1/2 left-4 bg-black/80 border border-yellow-400/40 text-yellow-300 text-[10px] px-2 py-1 rounded font-mono" data-testid="camera-notice">
+          Anonymous audience analytics active · no faces stored
+        </div>
+      )}
       <div className="absolute bottom-0 left-0 right-0 bg-black/70 backdrop-blur border-t border-yellow-400/30 py-2 overflow-hidden">
         <div className="marquee text-yellow-400 font-mono text-sm">
           ON WHEELS MEDIA · {playlist.filter(p=>p.type==="news").map(n=>n.headline).join(" · ") || "Ride safe. Stay tuned."}

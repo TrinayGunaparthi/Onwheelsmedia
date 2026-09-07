@@ -678,9 +678,18 @@ async def heartbeat(payload: DeviceHeartbeatIn, dev=Depends(get_current_device))
     return {"ok": True, "server_time": now_iso()}
 
 @api.get("/player/playlist")
-async def player_playlist(dev=Depends(get_current_device)):
+async def player_playlist(request: Request, dev=Depends(get_current_device)):
     device_id = str(dev["_id"])
-    # Find active campaigns targeting this device (or global) whose ad is approved
+    # Extract audience context from query params (sent by player based on latest audience sample)
+    aud_top_age = request.query_params.get("age_group", "")  # e.g. "25-34"
+    aud_top_gender = request.query_params.get("gender", "")  # "male"|"female"
+    try: aud_attention = int(request.query_params.get("attention", "0"))
+    except (ValueError, TypeError): aud_attention = 0
+    try: aud_viewers = int(request.query_params.get("viewers", "0"))
+    except (ValueError, TypeError): aud_viewers = 0
+    now_hour = datetime.now(timezone.utc).hour
+    time_slot = "morning" if 5<=now_hour<12 else "afternoon" if 12<=now_hour<17 else "evening" if 17<=now_hour<21 else "night"
+
     today = datetime.now(timezone.utc).date().isoformat()
     campaigns = await db.campaigns.find({
         "status": {"$in": ["Active", "Scheduled"]},
@@ -688,15 +697,58 @@ async def player_playlist(dev=Depends(get_current_device)):
         "start_date": {"$lte": today},
         "end_date": {"$gte": today},
     }).to_list(200)
-    items = []
+
+    def score_campaign(c):
+        """Score campaign against audience context. Higher = better match."""
+        rules = c.get("targeting_rules", {}) or {}
+        score = 1.0  # base
+        # time of day
+        allowed_slots = rules.get("time_slots") or []
+        if allowed_slots:
+            score = score * (2.0 if time_slot in allowed_slots else 0.3)
+        # age group
+        target_ages = rules.get("age_groups") or []
+        if target_ages and aud_top_age:
+            score = score * (2.5 if aud_top_age in target_ages else 0.4)
+        # gender
+        target_genders = rules.get("genders") or []
+        if target_genders and aud_top_gender:
+            score = score * (2.0 if aud_top_gender in target_genders else 0.5)
+        # min attention
+        min_att = rules.get("min_attention", 0)
+        if min_att and aud_attention < min_att:
+            score = score * 0.3
+        # min viewers
+        min_v = rules.get("min_viewers", 0)
+        if min_v and aud_viewers < min_v:
+            score = score * 0.4
+        return score
+
+    scored = []
     for c in campaigns:
         ad = await db.ads.find_one({"_id": oid(c["ad_id"])}) if c.get("ad_id") else None
         if ad and ad.get("status") == "Approved":
-            items.append({
-                "type": "ad", "id": str(ad["_id"]), "campaign_id": str(c["_id"]),
-                "name": ad["name"], "file_url": ad["file_url"], "file_type": ad["file_type"],
-                "duration": ad.get("duration_seconds", 15)
-            })
+            s = score_campaign(c)
+            scored.append((s, c, ad))
+    # Sort desc; if audience unavailable, order stays base=1.0 for all (natural)
+    scored.sort(key=lambda x: x[0], reverse=True)
+    items = []
+    for s, c, ad in scored:
+        item = {
+            "type": "ad", "id": str(ad["_id"]), "campaign_id": str(c["_id"]),
+            "name": ad["name"], "file_url": ad["file_url"], "file_type": ad["file_type"],
+            "duration": ad.get("duration_seconds", 15),
+            "targeting_score": round(s, 2),
+        }
+        # Interactive layer
+        inter = c.get("interactive") or {}
+        if inter.get("type") == "game" and inter.get("game_id"):
+            item["interactive"] = {"type": "game", "game_id": inter["game_id"]}
+        elif inter.get("type") == "qr" and inter.get("qr_id"):
+            item["interactive"] = {"type": "qr", "qr_id": inter["qr_id"]}
+        elif inter.get("type") == "coupon" and inter.get("coupon_code"):
+            item["interactive"] = {"type": "coupon", "code": inter["coupon_code"]}
+        items.append(item)
     # Active news
     news_list = await db.news.find({"active": True}).sort("created_at", -1).to_list(10)
     for n in news_list:
@@ -711,7 +763,7 @@ async def player_playlist(dev=Depends(get_current_device)):
     if wcfg:
         weather = await fetch_weather(wcfg["location"])
         items.append({"type": "weather", "location": wcfg["location"], "data": weather, "duration": wcfg.get("duration_seconds", 8)})
-    return {"device_code": dev["device_code"], "items": items, "generated_at": now_iso()}
+    return {"device_code": dev["device_code"], "items": items, "generated_at": now_iso(), "audience_context": {"age": aud_top_age, "gender": aud_top_gender, "attention": aud_attention, "viewers": aud_viewers, "time_slot": time_slot}}
 
 async def fetch_weather(location: str) -> Dict[str, Any]:
     key = os.environ.get("OPENWEATHER_API_KEY", "").strip()
@@ -1018,6 +1070,398 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     client.close()
+
+# ============================================================
+# PHASE 2 — AI Audience Analytics & Interactive Advertising
+# ============================================================
+
+# ---------- privacy config ----------
+class PrivacyConfigIn(BaseModel):
+    camera_enabled: bool = True
+    face_analysis_enabled: bool = True
+    upload_raw_footage: bool = False
+    data_retention_days: int = 30
+    show_camera_notice: bool = True
+    mirror_enabled: bool = True
+
+@api.get("/admin/privacy")
+async def get_privacy(user=Depends(require_role("admin"))):
+    cfg = await db.privacy_config.find_one({"_id": "singleton"})
+    if not cfg:
+        default = PrivacyConfigIn().model_dump()
+        default["_id"] = "singleton"
+        await db.privacy_config.insert_one(default)
+        cfg = default
+    cfg.pop("_id", None)
+    return cfg
+
+@api.patch("/admin/privacy")
+async def set_privacy(payload: PrivacyConfigIn, user=Depends(require_role("admin"))):
+    doc = payload.model_dump()
+    await db.privacy_config.update_one({"_id": "singleton"}, {"$set": doc}, upsert=True)
+    await audit(user, "update_privacy", "privacy", "singleton", doc)
+    return doc
+
+@api.get("/player/privacy")
+async def player_privacy(dev=Depends(get_current_device)):
+    cfg = await db.privacy_config.find_one({"_id": "singleton"}) or PrivacyConfigIn().model_dump()
+    cfg.pop("_id", None)
+    return cfg
+
+# ---------- audience samples (anonymous, aggregated) ----------
+class AudienceSampleIn(BaseModel):
+    viewers: int = 0
+    people_present: bool = False
+    age_distribution: Dict[str, int] = {}   # {"18-24": 1, "25-34": 2}
+    gender_distribution: Dict[str, int] = {}   # {"male": 1, "female": 2}
+    attention_score: int = 0  # 0-100
+    looking_at_screen: int = 0
+    avg_view_duration_sec: float = 0.0
+    source: str = "simulator"  # or "face_api" | "mediapipe"
+
+@api.post("/player/audience")
+async def report_audience(payload: AudienceSampleIn, dev=Depends(get_current_device)):
+    cfg = await db.privacy_config.find_one({"_id": "singleton"}) or {}
+    if cfg.get("camera_enabled", True) is False:
+        return {"ok": False, "reason": "camera disabled by admin"}
+    doc = payload.model_dump()
+    doc["device_id"] = str(dev["_id"])
+    doc["device_code"] = dev.get("device_code")
+    doc["at"] = now_iso()
+    await db.audience_samples.insert_one(doc)
+    return {"ok": True}
+
+@api.get("/admin/audience")
+async def admin_audience(hours: int = 24, device_id: Optional[str] = None, user=Depends(require_role("admin"))):
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    q = {"at": {"$gte": since}}
+    if device_id:
+        q["device_id"] = device_id
+    docs = await db.audience_samples.find(q).sort("at", -1).to_list(2000)
+    if not docs:
+        return {"samples_count": 0, "estimated_viewers": 0, "avg_attention": 0, "age_distribution": {}, "gender_distribution": {}, "by_hour": []}
+    total_viewers = sum(d.get("viewers", 0) for d in docs)
+    avg_att = round(sum(d.get("attention_score", 0) for d in docs) / len(docs))
+    age_agg, gen_agg = {}, {}
+    for d in docs:
+        for k, v in (d.get("age_distribution") or {}).items():
+            age_agg[k] = age_agg.get(k, 0) + v
+        for k, v in (d.get("gender_distribution") or {}).items():
+            gen_agg[k] = gen_agg.get(k, 0) + v
+    # Aggregate hourly
+    by_hour = {}
+    for d in docs:
+        try:
+            hr = d["at"][:13]
+        except Exception:
+            continue
+        e = by_hour.setdefault(hr, {"hour": hr, "viewers": 0, "attention_sum": 0, "n": 0})
+        e["viewers"] += d.get("viewers", 0)
+        e["attention_sum"] += d.get("attention_score", 0)
+        e["n"] += 1
+    hourly = sorted([{"hour": e["hour"], "viewers": e["viewers"], "avg_attention": round(e["attention_sum"]/max(e["n"],1))} for e in by_hour.values()], key=lambda x: x["hour"])
+    return {
+        "samples_count": len(docs), "estimated_viewers": total_viewers, "avg_attention": avg_att,
+        "age_distribution": age_agg, "gender_distribution": gen_agg, "by_hour": hourly
+    }
+
+# ---------- mini games ----------
+class GameIn(BaseModel):
+    name: str
+    game_type: str  # quiz|spin|memory|reaction|brand
+    config: Dict[str, Any] = {}  # {questions: [...], segments: [...], etc.}
+    active: bool = True
+
+@api.get("/admin/games")
+async def list_games(user=Depends(require_role("admin"))):
+    docs = await db.games.find().sort("created_at", -1).to_list(200)
+    return serialize_list(docs)
+
+@api.post("/admin/games")
+async def create_game(payload: GameIn, user=Depends(require_role("admin"))):
+    doc = {**payload.model_dump(), "created_at": now_iso(), "plays": 0, "completions": 0}
+    res = await db.games.insert_one(doc)
+    doc.pop("_id", None)
+    return {**doc, "id": str(res.inserted_id)}
+
+@api.delete("/admin/games/{gid}")
+async def delete_game(gid: str, user=Depends(require_role("admin"))):
+    await db.games.delete_one({"_id": oid(gid)})
+    return {"ok": True}
+
+@api.get("/games/list")
+async def public_games_for_advertiser(user=Depends(get_current_user)):
+    docs = await db.games.find({"active": True}).to_list(200)
+    return serialize_list(docs)
+
+# QR game session flow
+class GameSessionInitIn(BaseModel):
+    game_id: str
+    campaign_id: Optional[str] = None
+    device_id: Optional[str] = None
+
+@api.post("/games/session")
+async def start_game_session(payload: GameSessionInitIn):
+    game = await db.games.find_one({"_id": oid(payload.game_id)})
+    if not game:
+        raise HTTPException(404, "Game not found")
+    session_id = str(uuid.uuid4())
+    session = {
+        "session_id": session_id, "game_id": payload.game_id, "campaign_id": payload.campaign_id,
+        "device_id": payload.device_id, "started_at": now_iso(), "completed_at": None,
+        "score": None, "status": "started"
+    }
+    await db.game_sessions.insert_one(session)
+    await db.games.update_one({"_id": oid(payload.game_id)}, {"$inc": {"plays": 1}})
+    return {"session_id": session_id, "game": serialize(game)}
+
+class GameSessionCompleteIn(BaseModel):
+    session_id: str
+    score: int = 0
+    result: Dict[str, Any] = {}
+
+@api.post("/games/complete")
+async def complete_game_session(payload: GameSessionCompleteIn):
+    sess = await db.game_sessions.find_one({"session_id": payload.session_id})
+    if not sess:
+        raise HTTPException(404, "Session not found")
+    await db.game_sessions.update_one({"session_id": payload.session_id},
+        {"$set": {"completed_at": now_iso(), "score": payload.score, "result": payload.result, "status": "completed"}})
+    await db.games.update_one({"_id": oid(sess["game_id"])}, {"$inc": {"completions": 1}})
+    return {"ok": True}
+
+@api.get("/games/session/{session_id}")
+async def get_game_session(session_id: str):
+    sess = await db.game_sessions.find_one({"session_id": session_id})
+    if not sess:
+        raise HTTPException(404, "Session not found")
+    game = await db.games.find_one({"_id": oid(sess["game_id"])})
+    return {"session": serialize(sess), "game": serialize(game)}
+
+# ---------- screen mirroring ----------
+@api.post("/mirror/init")
+async def mirror_init(body: Dict[str, str], dev=Depends(get_current_device)):
+    cfg = await db.privacy_config.find_one({"_id": "singleton"}) or {}
+    if not cfg.get("mirror_enabled", True):
+        raise HTTPException(403, "Mirror disabled by admin")
+    token = str(uuid.uuid4())
+    session = {
+        "token": token, "device_id": str(dev["_id"]), "device_code": dev.get("device_code"),
+        "created_at": now_iso(), "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+        "authorized": False, "content": None
+    }
+    await db.mirror_sessions.insert_one(session)
+    return {"token": token, "expires_in": 300}
+
+@api.post("/mirror/authorize")
+async def mirror_authorize(body: Dict[str, Any]):
+    token = body.get("token", "")
+    content = body.get("content", {})  # {type: "text"|"image_url", value: "..."}
+    sess = await db.mirror_sessions.find_one({"token": token})
+    if not sess:
+        raise HTTPException(404, "Invalid token")
+    if datetime.now(timezone.utc).isoformat() > sess.get("expires_at", ""):
+        raise HTTPException(400, "Session expired")
+    # Whitelist safe content types only
+    if content.get("type") not in ("text", "image_url"):
+        raise HTTPException(400, "Unsupported content type")
+    await db.mirror_sessions.update_one({"token": token}, {"$set": {"authorized": True, "content": content, "authorized_at": now_iso()}})
+    return {"ok": True}
+
+@api.get("/mirror/poll/{token}")
+async def mirror_poll(token: str, dev=Depends(get_current_device)):
+    sess = await db.mirror_sessions.find_one({"token": token, "device_id": str(dev["_id"])})
+    if not sess:
+        raise HTTPException(404, "Not found")
+    return {"authorized": sess.get("authorized", False), "content": sess.get("content"), "expired": datetime.now(timezone.utc).isoformat() > sess.get("expires_at", "")}
+
+# ---------- advanced analytics ----------
+@api.get("/admin/analytics/engagement")
+async def engagement_analytics(hours: int = 24, user=Depends(require_role("admin"))):
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    qr_scans = await db.qr_scans.count_documents({"at": {"$gte": since}})
+    game_starts = await db.game_sessions.count_documents({"started_at": {"$gte": since}})
+    game_completes = await db.game_sessions.count_documents({"completed_at": {"$gte": since}})
+    mirror_sess = await db.mirror_sessions.count_documents({"created_at": {"$gte": since}})
+    mirror_auth = await db.mirror_sessions.count_documents({"authorized": True, "created_at": {"$gte": since}})
+    return {
+        "qr_scans": qr_scans, "game_starts": game_starts, "game_completions": game_completes,
+        "mirror_sessions": mirror_sess, "mirror_authorized": mirror_auth,
+        "completion_rate": round(100*game_completes/game_starts) if game_starts else 0
+    }
+
+@api.get("/advertiser/analytics")
+async def advertiser_analytics(user=Depends(require_role("advertiser"))):
+    campaigns = await db.campaigns.find({"advertiser_id": user["id"]}).to_list(200)
+    camp_ids = [str(c["_id"]) for c in campaigns]
+    plays = await db.playback_events.count_documents({"campaign_id": {"$in": camp_ids}})
+    # audience while our ads played (device-level rough estimate)
+    device_ids = list({d for c in campaigns for d in c.get("target_devices", [])}) or []
+    if device_ids:
+        aud = await db.audience_samples.find({"device_id": {"$in": device_ids}}).to_list(1000)
+    else:
+        aud = await db.audience_samples.find().to_list(1000)
+    est_viewers = sum(a.get("viewers", 0) for a in aud)
+    avg_att = round(sum(a.get("attention_score", 0) for a in aud) / len(aud)) if aud else 0
+    age_agg, gen_agg = {}, {}
+    for d in aud:
+        for k, v in (d.get("age_distribution") or {}).items(): age_agg[k] = age_agg.get(k, 0) + v
+        for k, v in (d.get("gender_distribution") or {}).items(): gen_agg[k] = gen_agg.get(k, 0) + v
+    # game / qr engagement for this advertiser's campaigns
+    game_starts = await db.game_sessions.count_documents({"campaign_id": {"$in": camp_ids}})
+    game_completes = await db.game_sessions.count_documents({"campaign_id": {"$in": camp_ids}, "status": "completed"})
+    # per campaign perf
+    per_camp = []
+    for c in campaigns:
+        cid = str(c["_id"])
+        cplays = await db.playback_events.count_documents({"campaign_id": cid})
+        gstarts = await db.game_sessions.count_documents({"campaign_id": cid})
+        per_camp.append({"id": cid, "name": c["name"], "plays": cplays, "game_starts": gstarts})
+    return {
+        "estimated_impressions": plays, "estimated_audience": est_viewers, "avg_attention": avg_att,
+        "age_distribution": age_agg, "gender_distribution": gen_agg,
+        "game_starts": game_starts, "game_completions": game_completes,
+        "per_campaign": per_camp
+    }
+
+# ---------- reports export (CSV/PDF) ----------
+import io
+import csv
+from fastapi.responses import StreamingResponse
+
+@api.get("/admin/reports/export")
+async def export_report(kind: str = "campaigns", fmt: str = "csv", days: int = 7, user=Depends(require_role("admin"))):
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    if kind == "campaigns":
+        rows = await db.campaigns.find().to_list(500)
+        headers = ["name", "advertiser_id", "start_date", "end_date", "status", "budget", "objective"]
+        data = [[r.get(h, "") for h in headers] for r in rows]
+    elif kind == "devices":
+        rows = await db.devices.find().to_list(500)
+        headers = ["device_code", "status", "last_online", "app_version", "network"]
+        data = [[r.get(h, "") for h in headers] for r in rows]
+    elif kind == "audience":
+        rows = await db.audience_samples.find({"at": {"$gte": since}}).to_list(5000)
+        headers = ["at", "device_code", "viewers", "attention_score", "age_distribution", "gender_distribution"]
+        data = [[r.get(h, "") if h != "age_distribution" and h != "gender_distribution" else str(r.get(h, {})) for h in headers] for r in rows]
+    elif kind == "engagement":
+        rows = await db.game_sessions.find({"started_at": {"$gte": since}}).to_list(5000)
+        headers = ["session_id", "game_id", "campaign_id", "device_id", "started_at", "completed_at", "score", "status"]
+        data = [[r.get(h, "") for h in headers] for r in rows]
+    else:
+        raise HTTPException(400, "Unknown report kind")
+
+    if fmt == "csv":
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(headers)
+        writer.writerows(data)
+        buf.seek(0)
+        return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{kind}_{days}d.csv"'})
+    elif fmt == "pdf":
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib import colors
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=32, bottomMargin=24)
+        styles = getSampleStyleSheet()
+        story = [Paragraph(f"On Wheels Media — {kind.title()} Report ({days} days)", styles["Title"]), Spacer(1, 12)]
+        table_data = [headers] + [[str(x)[:60] for x in row] for row in data[:500]]
+        t = Table(table_data, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#facc15")),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.black),
+            ("FONTSIZE", (0,0), (-1,-1), 8),
+            ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ]))
+        story.append(t)
+        doc.build(story)
+        buf.seek(0)
+        return StreamingResponse(iter([buf.getvalue()]), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{kind}_{days}d.pdf"'})
+    else:
+        raise HTTPException(400, "fmt must be csv or pdf")
+
+# ---------- campaign targeting update ----------
+class CampaignRulesIn(BaseModel):
+    targeting_rules: Optional[Dict[str, Any]] = None
+    interactive: Optional[Dict[str, Any]] = None
+
+@api.patch("/campaigns/{cid}/rules")
+async def update_campaign_rules(cid: str, payload: CampaignRulesIn, user=Depends(require_role("advertiser"))):
+    c = await db.campaigns.find_one({"_id": oid(cid), "advertiser_id": user["id"]})
+    if not c:
+        raise HTTPException(404, "Not found")
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if updates:
+        await db.campaigns.update_one({"_id": oid(cid)}, {"$set": updates})
+    c = await db.campaigns.find_one({"_id": oid(cid)})
+    return serialize(c)
+
+# ---------- bulk driver CSV import ----------
+@api.post("/admin/drivers/bulk")
+async def bulk_import_drivers(file: UploadFile = File(...), user=Depends(require_role("admin"))):
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(400, "Please upload a .csv file")
+    content = (await file.read()).decode("utf-8", errors="ignore")
+    reader = csv.DictReader(io.StringIO(content))
+    imported = 0
+    failed = []
+    for i, row in enumerate(reader, start=2):
+        try:
+            email = (row.get("email") or "").strip().lower()
+            if not email:
+                failed.append({"row": i, "reason": "missing email"}); continue
+            existing_user = await db.users.find_one({"email": email})
+            if existing_user:
+                uid = str(existing_user["_id"])
+            else:
+                default_pw = row.get("password") or "Owm@12345"
+                res = await db.users.insert_one({
+                    "email": email, "password_hash": hash_password(default_pw),
+                    "name": row.get("full_name") or "Driver",
+                    "role": "driver", "phone": row.get("phone") or "",
+                    "token_version": 0, "status": "active", "created_at": now_iso()
+                })
+                uid = str(res.inserted_id)
+            # upsert driver
+            driver_doc = {
+                "user_id": uid, "email": email,
+                "full_name": row.get("full_name") or "",
+                "phone": row.get("phone") or "",
+                "address": row.get("address") or "",
+                "city": row.get("city") or "", "state": row.get("state") or "",
+                "vehicle_reg_no": row.get("vehicle_reg_no") or "",
+                "vehicle_type": row.get("vehicle_type") or "Auto Rickshaw",
+                "manufacturer": row.get("manufacturer") or "",
+                "model": row.get("model") or "",
+                "year": int(row.get("year") or 2022),
+                "color": row.get("color") or "",
+                "operating_area": row.get("operating_area") or "",
+                "preferred_routes": row.get("preferred_routes") or "",
+                "documents": [], "status": "Pending",
+                "created_at": now_iso(), "updated_at": now_iso()
+            }
+            existing_d = await db.drivers.find_one({"user_id": uid})
+            if existing_d:
+                await db.drivers.update_one({"_id": existing_d["_id"]}, {"$set": driver_doc})
+                driver_id = str(existing_d["_id"])
+            else:
+                r = await db.drivers.insert_one(driver_doc)
+                driver_id = str(r.inserted_id)
+                await db.vehicles.insert_one({
+                    "driver_id": driver_id, "reg_no": driver_doc["vehicle_reg_no"],
+                    "vehicle_type": driver_doc["vehicle_type"], "manufacturer": driver_doc["manufacturer"],
+                    "model": driver_doc["model"], "year": driver_doc["year"], "color": driver_doc["color"],
+                    "operating_area": driver_doc["operating_area"], "status": "Pending", "created_at": now_iso()
+                })
+            imported += 1
+        except Exception as e:
+            failed.append({"row": i, "reason": str(e)[:120]})
+    await audit(user, "bulk_import_drivers", "driver", "", {"imported": imported, "failed": len(failed)})
+    return {"imported": imported, "failed_count": len(failed), "failed": failed[:20]}
+
 
 app.include_router(api)
 
