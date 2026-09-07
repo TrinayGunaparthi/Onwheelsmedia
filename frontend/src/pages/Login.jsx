@@ -46,7 +46,10 @@ export default function Login() {
           <button data-testid="login-submit" disabled={loading} type="submit" className="w-full bg-yellow-400 hover:bg-yellow-300 disabled:opacity-50 text-zinc-950 font-semibold py-3 rounded">
             {loading ? "Signing in…" : "Sign in →"}
           </button>
-          <p className="text-sm text-zinc-500 text-center">No account? <Link to="/register" className="text-yellow-400 hover:text-yellow-300">Create one</Link></p>
+          <div className="flex justify-between text-sm">
+            <Link data-testid="login-forgot" to="/forgot-password" className="text-zinc-500 hover:text-yellow-400">Forgot password?</Link>
+            <Link to="/register" className="text-yellow-400 hover:text-yellow-300">Create account</Link>
+          </div>
         </form>
       </div>
     </div>

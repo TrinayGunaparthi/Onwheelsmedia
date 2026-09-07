@@ -1,0 +1,39 @@
+{
+  "summary": "Phase-2 backend testing on top of iteration_1. Added /app/backend/tests/test_owm_phase2.py with 14 focused tests covering: password reset (forgot/reset endpoints, generic response, log-link capture, no-token for unregistered email, 5-per-15min rate-limit, bogus-token rejection, one-time-use token, new password login, old password 401, prior JWT invalidated via token_version bump), driver documents (POST /api/drivers accepts documents array; GET /api/drivers/me and GET /api/admin/drivers return documents), Stripe checkout (advertiser 200 with cs_test_ session_id + payment_transactions doc with status=initiated/payment_status=pending, unauth 401, admin 403, driver 403, GET /api/payments/status/{sid} unauth returns limited field set, POST /api/webhook/stripe without signature returns 200 without 500). Regression run of iteration_1 (21 tests) also passed. Total 35/35 pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/forgot-password", "issue": "Rate-limit uses ISO-string timestamp comparison ($gte on isoformat) — works today but brittle across timezone-format changes; and rate-limit is per-email only (no per-IP), so an attacker enumerating many emails is not throttled."},
+      {"endpoint": "POST /api/auth/forgot-password", "issue": "password_reset_requests are inserted BEFORE the recent-count check for the current call, so the counted window includes the just-inserted row. The current threshold `recent >= 5` still yields exactly 5 tokens on 6 rapid calls (verified), but the ordering makes the guard easy to break if the threshold is later tuned."},
+      {"endpoint": "POST /api/auth/reset-password", "issue": "On success, existing refresh_token cookies are not explicitly rotated — access tokens are invalidated by token_version bump (good), but refresh_token uses the same version so it is invalidated too; however no cookies are cleared on the client. Cosmetic."},
+      {"endpoint": "POST /api/webhook/stripe", "issue": "Endpoint always returns {ok:true} even when signature verification fails inside handle_webhook — errors are swallowed and only logged. Fine for MVP but hides misconfigurations."},
+      {"endpoint": "GET /api/payments/status/{session_id}", "issue": "Endpoint is intentionally public per spec, but leaks session_id → amount/status mapping to anyone who guesses the id. Consider ownership check or short-lived token in future."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_owm_phase2.py",
+    "/app/backend/tests/test_owm_backend.py",
+    "/app/test_reports/pytest/phase2_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py now 1031 lines — still monolithic; strongly recommend splitting into routers/ modules (auth, drivers, payments, admin, player).",
+    "CORS still uses allow_origins=['*'] with allow_credentials=True — invalid combination for browser cookie auth. Bearer flow works, but cookie-based login from the SPA origin will silently fail in strict browsers.",
+    "Password reset: the request row is inserted before the rate-limit count — reorder to count first, then insert, to avoid off-by-one when threshold is tuned.",
+    "Stripe webhook exception is silently swallowed and returns ok:true regardless. Prefer returning {ok: false} (or 400) on signature failure so misconfig surfaces.",
+    "/api/payments/status/{sid} is unauthenticated — acceptable per spec but should at minimum rate-limit lookups to prevent session-id enumeration.",
+    "STRIPE_API_KEY is defaulted to 'sk_test_emergent' in code — fine for shared sandbox, but should be a required env var in prod (fail fast).",
+    "Password reset link is written to backend logs — good for MVP but treat as sensitive: emergent test runners can read them. Ensure logs are excluded from any user-facing export."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_owm_phase2.py (new)"
+  ],
+  "success_rate": {"backend": "100% (35/35: 14 phase-2 + 21 regression)", "frontend": "not tested (skipped per request)"},
+  "test_credentials": "Admin: admin@onwheelsmedia.com / Admin@12345. Test users created with TEST_ prefix (advertisers/drivers) inside each test.",
+  "seed_data_creation": "Ephemeral TEST_ users, drivers, password_reset_tokens, payment_transactions and Stripe checkout sessions (sandbox). Persists in DB — cleanup not implemented.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Password reset link is captured from `grep -a 'Password reset link' /var/log/supervisor/backend.err.log`. Email is lower()-normalised on entry — tests must query with lowercase email. Rate-limit is 5 tokens per 15 minutes per email; use a UNIQUE registered email per rate-limit test to avoid pollution. Stripe checkout returns real cs_test_ URLs via emergentintegrations (STRIPE_API_KEY=sk_test_emergent). /api/payments/status/{sid} is intentionally public. Webhook endpoint returns 200 regardless of signature validity (documented minor issue).",
+  "rca of the issue": "Two initial test failures were tester-side (mine): the phase-2 test suite compared email strings without lowercasing them, whereas the server normalises via `payload.email.lower()` in both /auth/forgot-password and /auth/register. Result: (a) grep for 'Password reset link for <MixedCase>' in logs found nothing (log has lowercase), (b) the DB count for password_reset_tokens by email returned 0 for the rate-limit assertion. Fixed by calling `.lower()` on emails in the tests. No server bug."
+}

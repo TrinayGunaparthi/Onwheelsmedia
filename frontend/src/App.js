@@ -5,6 +5,10 @@ import { Toaster } from "sonner";
 import Landing from "@/pages/Landing";
 import Login from "@/pages/Login";
 import Register from "@/pages/Register";
+import ForgotPassword from "@/pages/ForgotPassword";
+import ResetPassword from "@/pages/ResetPassword";
+import PaymentSuccess from "@/pages/PaymentSuccess";
+import PaymentCancel from "@/pages/PaymentCancel";
 import AdminApp from "@/pages/admin/AdminApp";
 import AdvertiserApp from "@/pages/advertiser/AdvertiserApp";
 import DriverApp from "@/pages/driver/DriverApp";
@@ -28,6 +32,10 @@ function App() {
             <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/payment/success" element={<PaymentSuccess />} />
+            <Route path="/payment/cancel" element={<PaymentCancel />} />
             <Route path="/player" element={<KioskPlayer />} />
             <Route path="/admin/*" element={<Protected role="admin"><AdminApp /></Protected>} />
             <Route path="/advertiser/*" element={<Protected role="advertiser"><AdvertiserApp /></Protected>} />

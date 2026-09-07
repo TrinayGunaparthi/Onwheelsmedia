@@ -43,31 +43,78 @@ function Profile() {
     vehicle_reg_no: "", vehicle_type: "Auto Rickshaw", manufacturer: "Bajaj", model: "", year: 2022,
     color: "Yellow-Green", operating_area: "", preferred_routes: ""
   });
+  const [documents, setDocuments] = useState([]); // {type, name, url, path}
+  const [uploadingType, setUploadingType] = useState("");
   useEffect(() => {
     api.get("/drivers/me").then(r => {
-      if (r.data?.driver) { setExisting(r.data.driver); setForm({...form, ...r.data.driver}); }
+      if (r.data?.driver) {
+        setExisting(r.data.driver);
+        setForm({...form, ...r.data.driver});
+        setDocuments(r.data.driver.documents || []);
+      }
     });
   }, []);
+  const uploadDoc = async (docType, file) => {
+    if (!file) return;
+    setUploadingType(docType);
+    try {
+      const fd = new FormData(); fd.append("file", file);
+      const { data } = await api.post("/uploads", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      setDocuments((prev) => [...prev.filter(d => d.type !== docType), { type: docType, name: file.name, url: data.url, path: data.path }]);
+      toast.success(`${docType} uploaded`);
+    } catch { toast.error("Upload failed"); }
+    finally { setUploadingType(""); }
+  };
   const submit = async () => {
-    try { await api.post("/drivers", form); toast.success("Submitted for approval"); location.reload(); }
+    try { await api.post("/drivers", { ...form, documents }); toast.success("Submitted for approval"); location.reload(); }
     catch (e) { toast.error("Submit failed"); }
   };
+  const docTypes = [
+    { key: "rc_book", label: "RC Book (vehicle registration)" },
+    { key: "driver_license", label: "Driver License" },
+    { key: "insurance", label: "Insurance Certificate" },
+    { key: "profile_photo", label: "Profile Photo" },
+  ];
   return (
-    <div data-testid="driver-profile" className="max-w-3xl">
-      {existing && <div className="mb-4 p-3 border border-zinc-800 bg-zinc-900 rounded text-xs">Status: <span className="text-yellow-400 font-medium">{existing.status}</span></div>}
-      <div className="grid md:grid-cols-2 gap-3">
-        {[
-          ["full_name","Full name"],["phone","Phone"],["address","Address"],["city","City"],["state","State"],
-          ["vehicle_reg_no","Vehicle registration"],["manufacturer","Manufacturer"],["model","Model"],["color","Color"],["operating_area","Operating area"],["preferred_routes","Preferred routes"]
-        ].map(([k,l]) => (
-          <input data-testid={`d-${k}`} key={k} placeholder={l} value={form[k]||""} onChange={e=>setForm({...form, [k]:e.target.value})} className="bg-zinc-900 border border-zinc-800 focus:border-yellow-400 outline-none px-3 py-2 text-sm rounded" />
-        ))}
-        <input data-testid="d-year" type="number" placeholder="Year" value={form.year||""} onChange={e=>setForm({...form, year:parseInt(e.target.value)||2022})} className="bg-zinc-900 border border-zinc-800 focus:border-yellow-400 outline-none px-3 py-2 text-sm rounded" />
-        <select data-testid="d-vtype" value={form.vehicle_type} onChange={e=>setForm({...form, vehicle_type:e.target.value})} className="bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm rounded">
-          {["Auto Rickshaw","E-Rickshaw","Taxi"].map(o=><option key={o}>{o}</option>)}
-        </select>
-        <button data-testid="d-submit" onClick={submit} className="md:col-span-2 bg-yellow-400 hover:bg-yellow-300 text-zinc-950 px-4 py-3 text-sm font-medium rounded">Save & submit for approval</button>
+    <div data-testid="driver-profile" className="max-w-3xl space-y-6">
+      {existing && <div className="p-3 border border-zinc-800 bg-zinc-900 rounded text-xs">Status: <span className="text-yellow-400 font-medium">{existing.status}</span></div>}
+      <div>
+        <div className="text-xs uppercase tracking-widest text-zinc-500 mb-3">Personal & Vehicle</div>
+        <div className="grid md:grid-cols-2 gap-3">
+          {[
+            ["full_name","Full name"],["phone","Phone"],["address","Address"],["city","City"],["state","State"],
+            ["vehicle_reg_no","Vehicle registration"],["manufacturer","Manufacturer"],["model","Model"],["color","Color"],["operating_area","Operating area"],["preferred_routes","Preferred routes"]
+          ].map(([k,l]) => (
+            <input data-testid={`d-${k}`} key={k} placeholder={l} value={form[k]||""} onChange={e=>setForm({...form, [k]:e.target.value})} className="bg-zinc-900 border border-zinc-800 focus:border-yellow-400 outline-none px-3 py-2 text-sm rounded" />
+          ))}
+          <input data-testid="d-year" type="number" placeholder="Year" value={form.year||""} onChange={e=>setForm({...form, year:parseInt(e.target.value)||2022})} className="bg-zinc-900 border border-zinc-800 focus:border-yellow-400 outline-none px-3 py-2 text-sm rounded" />
+          <select data-testid="d-vtype" value={form.vehicle_type} onChange={e=>setForm({...form, vehicle_type:e.target.value})} className="bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm rounded">
+            {["Auto Rickshaw","E-Rickshaw","Taxi"].map(o=><option key={o}>{o}</option>)}
+          </select>
+        </div>
       </div>
+
+      <div>
+        <div className="text-xs uppercase tracking-widest text-zinc-500 mb-3">Documents</div>
+        <div className="grid md:grid-cols-2 gap-3">
+          {docTypes.map(dt => {
+            const uploaded = documents.find(d => d.type === dt.key);
+            return (
+              <label key={dt.key} className={`border border-dashed rounded p-4 cursor-pointer ${uploaded?"border-green-500/40 bg-green-500/5":"border-zinc-800 hover:border-yellow-400"}`}>
+                <input data-testid={`doc-${dt.key}`} type="file" accept="image/*,application/pdf" hidden onChange={e => uploadDoc(dt.key, e.target.files[0])} />
+                <div className="text-xs uppercase tracking-widest text-zinc-500">{dt.label}</div>
+                <div className="mt-2 text-sm">
+                  {uploadingType===dt.key ? <span className="text-yellow-400">Uploading…</span>
+                   : uploaded ? <span className="text-green-400">✓ {uploaded.name}</span>
+                   : <span className="text-zinc-500">Click to upload</span>}
+                </div>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+
+      <button data-testid="d-submit" onClick={submit} className="w-full bg-yellow-400 hover:bg-yellow-300 text-zinc-950 px-4 py-3 text-sm font-medium rounded">Save & submit for approval</button>
     </div>
   );
 }

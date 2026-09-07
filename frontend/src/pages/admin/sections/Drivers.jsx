@@ -7,6 +7,7 @@ const STATUSES = ["Pending", "Under Review", "Approved", "Rejected", "Suspended"
 export default function DriversPage() {
   const [rows, setRows] = useState([]);
   const [search, setSearch] = useState("");
+  const [openDocs, setOpenDocs] = useState(null);
   const load = () => api.get("/admin/drivers").then(r => setRows(r.data));
   useEffect(load, []);
   const setStatus = async (id, status) => {
@@ -14,6 +15,7 @@ export default function DriversPage() {
     catch (e) { toast.error("Update failed"); }
   };
   const filtered = rows.filter(r => (r.full_name+" "+r.email+" "+r.city).toLowerCase().includes(search.toLowerCase()));
+  const BACKEND = process.env.REACT_APP_BACKEND_URL;
   return (
     <div data-testid="admin-drivers">
       <div className="flex items-center justify-between mb-4">
@@ -24,7 +26,7 @@ export default function DriversPage() {
         <table className="w-full text-sm">
           <thead className="bg-zinc-900 text-xs uppercase tracking-widest text-zinc-500">
             <tr>
-              <th className="text-left p-3">Name</th><th className="text-left p-3">Contact</th><th className="text-left p-3">City</th><th className="text-left p-3">Vehicle</th><th className="text-left p-3">Status</th><th className="text-left p-3">Actions</th>
+              <th className="text-left p-3">Name</th><th className="text-left p-3">Contact</th><th className="text-left p-3">City</th><th className="text-left p-3">Vehicle</th><th className="text-left p-3">Docs</th><th className="text-left p-3">Status</th><th className="text-left p-3">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -34,6 +36,11 @@ export default function DriversPage() {
                 <td className="p-3 text-zinc-400">{d.email}<br /><span className="font-mono text-xs">{d.phone}</span></td>
                 <td className="p-3">{d.city}, {d.state}</td>
                 <td className="p-3 font-mono text-xs">{d.vehicle_reg_no}<br /><span className="text-zinc-500">{d.manufacturer} {d.model}</span></td>
+                <td className="p-3">
+                  <button data-testid={`driver-docs-${d.id}`} onClick={()=>setOpenDocs(d)} className="text-xs px-2 py-1 border border-zinc-700 hover:border-yellow-400 rounded">
+                    {d.documents?.length || 0} files
+                  </button>
+                </td>
                 <td className="p-3"><span className={`px-2 py-1 rounded text-xs ${d.status==="Approved"?"bg-green-500/20 text-green-400":d.status==="Rejected"?"bg-red-500/20 text-red-400":"bg-yellow-500/20 text-yellow-400"}`}>{d.status}</span></td>
                 <td className="p-3">
                   <select data-testid={`driver-status-${d.id}`} value={d.status} onChange={e=>setStatus(d.id, e.target.value)} className="bg-zinc-900 border border-zinc-800 px-2 py-1 text-xs rounded">
@@ -42,10 +49,30 @@ export default function DriversPage() {
                 </td>
               </tr>
             ))}
-            {filtered.length===0 && <tr><td colSpan={6} className="p-12 text-center text-zinc-500">No drivers yet</td></tr>}
+            {filtered.length===0 && <tr><td colSpan={7} className="p-12 text-center text-zinc-500">No drivers yet</td></tr>}
           </tbody>
         </table>
       </div>
+      {openDocs && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm grid place-items-center z-50 p-6" onClick={()=>setOpenDocs(null)}>
+          <div className="w-full max-w-2xl bg-zinc-950 border border-zinc-800 rounded p-6" onClick={e=>e.stopPropagation()} data-testid="docs-modal">
+            <div className="flex justify-between items-center mb-4">
+              <div className="font-display text-xl font-semibold">{openDocs.full_name}'s documents</div>
+              <button onClick={()=>setOpenDocs(null)} className="text-zinc-500 hover:text-white">✕</button>
+            </div>
+            {!openDocs.documents?.length && <div className="text-center py-12 text-zinc-500">No documents uploaded.</div>}
+            <div className="grid md:grid-cols-2 gap-3">
+              {openDocs.documents?.map((doc, i) => (
+                <a key={i} href={`${BACKEND}${doc.url}`} target="_blank" rel="noreferrer" className="border border-zinc-800 hover:border-yellow-400 rounded p-3 block">
+                  <div className="text-xs uppercase tracking-widest text-yellow-400">{doc.type.replace(/_/g," ")}</div>
+                  <div className="text-sm mt-1 truncate">{doc.name}</div>
+                  <div className="text-xs text-zinc-500 mt-2">View →</div>
+                </a>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

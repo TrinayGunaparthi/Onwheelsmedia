@@ -154,18 +154,45 @@ function Reports() {
 
 function Payments() {
   const [rows, setRows] = useState([]);
-  useEffect(() => { api.get("/payments/invoices").then(r => setRows(r.data)); }, []);
+  const [amount, setAmount] = useState(50);
+  const [loading, setLoading] = useState(false);
+  const load = () => api.get("/payments/invoices").then(r => setRows(r.data));
+  useEffect(() => { load(); }, []);
+  const topUp = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/payments/checkout", { amount: parseFloat(amount), origin_url: window.location.origin });
+      window.location.href = data.checkout_url;
+    } catch (e) { toast.error(e.response?.data?.detail || "Checkout failed"); setLoading(false); }
+  };
   return (
-    <div className="border border-zinc-800" data-testid="adv-payments">
-      <div className="p-4 bg-yellow-400/10 text-yellow-300 text-xs border-b border-zinc-800">Stripe checkout coming online — invoices are being drafted for review.</div>
-      {rows.map(i => (
-        <div key={i.id} className="p-4 border-b border-zinc-800 last:border-0 flex justify-between hover:bg-zinc-900">
-          <div className="font-mono text-xs">{i.id}</div>
-          <div className="font-medium">₹{i.amount}</div>
-          <div><span className="px-2 py-1 rounded text-xs bg-yellow-500/20 text-yellow-400">{i.status}</span></div>
+    <div className="space-y-6" data-testid="adv-payments">
+      <div className="border border-zinc-800 p-6">
+        <div className="text-xs uppercase tracking-widest text-zinc-500 mb-3">Top up campaign budget</div>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-zinc-400 text-sm">$</span>
+            <input data-testid="topup-amount" type="number" min="1" step="1" value={amount} onChange={e=>setAmount(e.target.value)} className="w-32 bg-zinc-900 border border-zinc-800 focus:border-yellow-400 outline-none px-3 py-2 text-sm rounded" />
+          </div>
+          {[25,50,100,250].map(v => (
+            <button key={v} data-testid={`preset-${v}`} type="button" onClick={()=>setAmount(v)} className="text-xs px-3 py-1.5 rounded border border-zinc-800 hover:border-yellow-400 text-zinc-300">${v}</button>
+          ))}
+          <button data-testid="topup-checkout" onClick={topUp} disabled={loading || amount<1} className="ml-auto bg-yellow-400 hover:bg-yellow-300 disabled:opacity-40 text-zinc-950 px-6 py-2 text-sm rounded font-semibold">
+            {loading ? "Redirecting…" : "Pay with Stripe →"}
+          </button>
         </div>
-      ))}
-      {rows.length===0 && <div className="p-12 text-center text-zinc-500">No invoices yet.</div>}
+        <div className="mt-3 text-xs text-zinc-500">Powered by Stripe · test card <span className="font-mono">4242 4242 4242 4242</span> · any future date, any CVC</div>
+      </div>
+      <div className="border border-zinc-800">
+        {rows.map(i => (
+          <div key={i.id} className="p-4 border-b border-zinc-800 last:border-0 flex justify-between hover:bg-zinc-900">
+            <div className="font-mono text-xs">{i.id}</div>
+            <div className="font-medium">${i.amount}</div>
+            <div><span className={`px-2 py-1 rounded text-xs ${i.status==="Paid"?"bg-green-500/20 text-green-400":"bg-yellow-500/20 text-yellow-400"}`}>{i.status}</span></div>
+          </div>
+        ))}
+        {rows.length===0 && <div className="p-12 text-center text-zinc-500">No invoices yet.</div>}
+      </div>
     </div>
   );
 }

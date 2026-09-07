@@ -185,6 +185,19 @@ class DriverIn(BaseModel):
     color: str
     operating_area: str
     preferred_routes: Optional[str] = ""
+    documents: Optional[List[Dict[str, str]]] = None  # [{type, name, url, path}]
+
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+class ResetPasswordIn(BaseModel):
+    token: str
+    password: str = Field(min_length=6)
+
+class CheckoutIn(BaseModel):
+    amount: float = Field(gt=0, le=1000000)
+    origin_url: str
+    campaign_id: Optional[str] = None
 
 class VehicleUpdate(BaseModel):
     status: Optional[str] = None
@@ -325,6 +338,131 @@ async def logout(response: Response):
 async def me(user=Depends(get_current_user)):
     return user
 
+# ---------- password reset ----------
+import hashlib
+import secrets as _secrets
+
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "").rstrip("/")
+
+@api.post("/auth/forgot-password")
+async def forgot_password(payload: ForgotPasswordIn):
+    email = payload.email.lower()
+    now = datetime.now(timezone.utc)
+    # rate limit by email (5 per 15 min)
+    recent = await db.password_reset_requests.count_documents({"email": email, "created_at": {"$gte": (now - timedelta(minutes=15)).isoformat()}})
+    generic = {"message": "If that email is registered, a reset link has been sent."}
+    await db.password_reset_requests.insert_one({"email": email, "created_at": now.isoformat()})
+    if recent >= 5:
+        return generic
+    user = await db.users.find_one({"email": email})
+    if not user:
+        return generic
+    token = _secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    await db.password_reset_tokens.insert_one({
+        "token_hash": token_hash, "user_id": str(user["_id"]), "email": email,
+        "expires_at": (now + timedelta(hours=1)).isoformat(), "used": False
+    })
+    link = f"{FRONTEND_URL}/reset-password?token={token}"
+    logger.info(f"Password reset link for {email}: {link}")
+    return generic
+
+@api.post("/auth/reset-password")
+async def reset_password(payload: ResetPasswordIn):
+    token_hash = hashlib.sha256(payload.token.encode()).hexdigest()
+    now = datetime.now(timezone.utc).isoformat()
+    rec = await db.password_reset_tokens.find_one_and_update(
+        {"token_hash": token_hash, "used": False, "expires_at": {"$gt": now}},
+        {"$set": {"used": True}}
+    )
+    if not rec:
+        raise HTTPException(400, "Invalid or expired reset link")
+    await db.users.update_one(
+        {"_id": ObjectId(rec["user_id"])},
+        {"$set": {"password_hash": hash_password(payload.password)}, "$inc": {"token_version": 1}}
+    )
+    await db.password_reset_tokens.delete_many({"user_id": rec["user_id"], "used": False})
+    await db.login_attempts.delete_many({"email": rec["email"]})
+    return {"ok": True}
+
+# ---------- stripe checkout (Flow B, uses emergentintegrations) ----------
+STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "sk_test_emergent")
+
+try:
+    from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
+    _STRIPE_AVAILABLE = True
+except Exception as e:
+    logger.warning(f"Stripe integration unavailable: {e}")
+    _STRIPE_AVAILABLE = False
+
+@api.post("/payments/checkout")
+async def create_checkout(payload: CheckoutIn, request: Request, user=Depends(require_role("advertiser"))):
+    if not _STRIPE_AVAILABLE:
+        raise HTTPException(500, "Stripe integration not available")
+    host_url = str(request.base_url)
+    webhook_url = f"{host_url.rstrip('/')}/api/webhook/stripe"
+    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+    origin = payload.origin_url.rstrip("/")
+    req = CheckoutSessionRequest(
+        amount=float(payload.amount), currency="usd",
+        success_url=f"{origin}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{origin}/payment/cancel",
+        metadata={"user_id": user["id"], "campaign_id": payload.campaign_id or ""}
+    )
+    session = await stripe_checkout.create_checkout_session(req)
+    await db.payment_transactions.insert_one({
+        "session_id": session.session_id, "user_id": user["id"], "campaign_id": payload.campaign_id or "",
+        "amount": float(payload.amount), "currency": "usd",
+        "status": "initiated", "payment_status": "pending",
+        "created_at": now_iso(), "updated_at": now_iso()
+    })
+    return {"checkout_url": session.url, "session_id": session.session_id}
+
+@api.get("/payments/status/{session_id}")
+async def payment_status(session_id: str):
+    record = await db.payment_transactions.find_one({"session_id": session_id})
+    if not record:
+        raise HTTPException(404, "Transaction not found")
+    if record.get("payment_status") != "paid" and _STRIPE_AVAILABLE:
+        try:
+            sc = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url="unused")
+            status = await sc.get_checkout_status(session_id)
+            if status.payment_status == "paid":
+                await db.payment_transactions.update_one(
+                    {"session_id": session_id, "payment_status": {"$ne": "paid"}},
+                    {"$set": {"status": "completed", "payment_status": "paid", "updated_at": now_iso()}}
+                )
+                # top up campaign budget or create invoice
+                if record.get("campaign_id"):
+                    await db.invoices.insert_one({
+                        "advertiser_id": record["user_id"], "campaign_id": record["campaign_id"],
+                        "amount": record["amount"], "currency": "usd", "status": "Paid",
+                        "session_id": session_id, "created_at": now_iso()
+                    })
+                record = await db.payment_transactions.find_one({"session_id": session_id})
+        except Exception as e:
+            logger.warning(f"stripe status check failed: {e}")
+    return {"session_id": record["session_id"], "status": record["status"], "payment_status": record["payment_status"], "amount": record.get("amount")}
+
+@api.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    if not _STRIPE_AVAILABLE:
+        return {"ok": False}
+    body = await request.body()
+    sig = request.headers.get("Stripe-Signature", "")
+    try:
+        sc = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url="unused")
+        resp = await sc.handle_webhook(body, sig)
+        if resp.payment_status == "paid":
+            await db.payment_transactions.update_one(
+                {"session_id": resp.session_id, "payment_status": {"$ne": "paid"}},
+                {"$set": {"status": "completed", "payment_status": "paid", "updated_at": now_iso()}}
+            )
+    except Exception as e:
+        logger.error(f"webhook error: {e}")
+    return {"ok": True}
+
+
 # ---------- uploads ----------
 @api.post("/uploads")
 async def upload_file(file: UploadFile = File(...), user=Depends(get_current_user)):
@@ -359,12 +497,14 @@ async def get_file(path: str):
 @api.post("/drivers")
 async def create_driver(payload: DriverIn, user=Depends(require_role("driver"))):
     existing = await db.drivers.find_one({"user_id": user["id"]})
+    payload_dict = payload.model_dump()
+    docs_list = payload_dict.pop("documents", None) or []
     doc = {
         "user_id": user["id"],
         "email": user["email"],
-        **payload.model_dump(),
+        **payload_dict,
         "status": "Pending",
-        "documents": [],
+        "documents": docs_list,
         "created_at": now_iso(),
         "updated_at": now_iso(),
     }
@@ -855,6 +995,8 @@ async def startup():
         await db.playback_events.create_index("ad_id")
         await db.playback_events.create_index("campaign_id")
         await db.notifications.create_index([("user_id", 1), ("at", -1)])
+        await db.password_reset_tokens.create_index("token_hash", unique=True)
+        await db.password_reset_requests.create_index("email")
     except Exception as e:
         logger.warning(f"index setup: {e}")
     # Seed admin
