@@ -1122,7 +1122,7 @@ class AudienceSampleIn(BaseModel):
 @api.post("/player/audience")
 async def report_audience(payload: AudienceSampleIn, dev=Depends(get_current_device)):
     cfg = await db.privacy_config.find_one({"_id": "singleton"}) or {}
-    if cfg.get("camera_enabled", True) is False:
+    if cfg.get("camera_enabled", True) == False:
         return {"ok": False, "reason": "camera disabled by admin"}
     doc = payload.model_dump()
     doc["device_id"] = str(dev["_id"])
@@ -1543,11 +1543,11 @@ async def report_health(payload: DeviceHealthIn, dev=Depends(get_current_device)
     dcode = dev.get("device_code")
     if payload.storage_pct is not None and payload.storage_pct > 90:
         await create_alert("storage_full", f"Storage almost full on {dcode} ({payload.storage_pct}%)", severity="high", device_id=str(dev["_id"]))
-    if payload.battery is not None and payload.battery < 15 and payload.charging is False:
+    if payload.battery is not None and payload.battery < 15 and payload.charging == False:
         await create_alert("battery_low", f"Battery low on {dcode} ({payload.battery}%)", severity="medium", device_id=str(dev["_id"]))
     if payload.temperature_c is not None and payload.temperature_c > 60:
         await create_alert("temp_high", f"High temperature on {dcode} ({payload.temperature_c}°C)", severity="high", device_id=str(dev["_id"]))
-    if payload.camera_ok is False:
+    if payload.camera_ok == False:
         await create_alert("camera_fail", f"Camera unavailable on {dcode}", severity="medium", device_id=str(dev["_id"]))
     return {"ok": True}
 

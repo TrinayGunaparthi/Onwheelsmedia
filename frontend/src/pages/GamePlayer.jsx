@@ -24,7 +24,7 @@ export default function GamePlayer() {
   const finish = async (finalScore, result = {}) => {
     setScore(finalScore);
     setState({ phase: "done" });
-    try { await api.post("/games/complete", { session_id: session.session_id, score: finalScore, result }); } catch {}
+    try { await api.post("/games/complete", { session_id: session.session_id, score: finalScore, result }); } catch (e) { console.warn("[game] completion save failed:", e?.message || e); }
   };
 
   if (state.phase === "loading") return <div className="min-h-screen bg-zinc-950 text-white grid place-items-center">Loading…</div>;

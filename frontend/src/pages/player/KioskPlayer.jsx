@@ -58,14 +58,14 @@ export default function KioskPlayer() {
         setPlaylist(data.items);
         localStorage.setItem("owm_playlist_cache", JSON.stringify(data.items));
       }
-    } catch (e) { /* offline — use cache */ }
+    } catch (e) { console.warn("[player] playlist sync failed:", e?.message || e); }
   }, [authHeaders]);
 
   // Load cache on start
   useEffect(() => {
     if (phase !== "ready") return;
     const cached = localStorage.getItem("owm_playlist_cache");
-    if (cached) { try { setPlaylist(JSON.parse(cached)); } catch {} }
+    if (cached) { try { setPlaylist(JSON.parse(cached)); } catch (e) { console.warn("[player] cache parse failed:", e); } }
     syncPlaylist();
     const t = setInterval(syncPlaylist, SYNC_MS);
     return () => clearInterval(t);
@@ -81,9 +81,9 @@ export default function KioskPlayer() {
         if (eventBuffer.current.length) {
           const batch = eventBuffer.current.splice(0);
           try { await api.post("/player/playback/batch", batch, { headers: authHeaders() }); }
-          catch { eventBuffer.current.unshift(...batch); }
+          catch (e) { console.warn("[player] batch flush failed, retrying:", e?.message || e); eventBuffer.current.unshift(...batch); }
         }
-      } catch {}
+      } catch (e) { console.warn("[player] heartbeat failed:", e?.message || e); }
     };
     send();
     const t = setInterval(send, HEARTBEAT_MS);
@@ -93,7 +93,7 @@ export default function KioskPlayer() {
   // Fetch privacy config once (respects admin toggles)
   useEffect(() => {
     if (phase !== "ready") return;
-    api.get("/player/privacy", { headers: authHeaders() }).then(r => setPrivacy(r.data)).catch(() => {});
+    api.get("/player/privacy", { headers: authHeaders() }).then(r => setPrivacy(r.data)).catch((e) => console.warn("[player] privacy fetch failed:", e?.message || e));
   }, [phase, authHeaders]);
 
   // Audience sampler (privacy-first): tries real camera via face-api.js, falls back to simulator
@@ -102,10 +102,10 @@ export default function KioskPlayer() {
     if (privacy.camera_enabled === false) return;
     const tick = async () => {
       let sample;
-      try { sample = await detectSample(); } catch { sample = simulate(); }
+      try { sample = await detectSample(); } catch (e) { console.warn("[player] detectSample failed, using simulator:", e?.message || e); sample = simulate(); }
       setAudience(sample);
       audienceRef.current = sample;
-      try { await api.post("/player/audience", sample, { headers: authHeaders() }); } catch {}
+      try { await api.post("/player/audience", sample, { headers: authHeaders() }); } catch (e) { console.warn("[player] audience upload failed:", e?.message || e); }
     };
     tick();
     const t = setInterval(tick, AUDIENCE_MS);

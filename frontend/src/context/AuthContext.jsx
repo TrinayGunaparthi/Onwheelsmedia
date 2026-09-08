@@ -10,7 +10,10 @@ export function AuthProvider({ children }) {
       try {
         const { data } = await api.get("/auth/me");
         setUser(data);
-      } catch { setUser(false); }
+      } catch (e) {
+        if (e?.response?.status !== 401) console.warn("[auth] /me failed:", e?.message || e);
+        setUser(false);
+      }
     })();
   }, []);
 
@@ -27,7 +30,7 @@ export function AuthProvider({ children }) {
     return data;
   };
   const logout = async () => {
-    try { await api.post("/auth/logout"); } catch {}
+    try { await api.post("/auth/logout"); } catch (e) { console.warn("[auth] logout API failed:", e?.message || e); }
     localStorage.removeItem("owm_token");
     setUser(false);
   };
