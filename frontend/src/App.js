@@ -13,6 +13,7 @@ import GamePlayer from "@/pages/GamePlayer";
 import AdminApp from "@/pages/admin/AdminApp";
 import AdvertiserApp from "@/pages/advertiser/AdvertiserApp";
 import DriverApp from "@/pages/driver/DriverApp";
+import AgencyApp from "@/pages/agency/AgencyApp";
 import KioskPlayer from "@/pages/player/KioskPlayer";
 
 function Protected({ role, children }) {
@@ -41,6 +42,7 @@ function App() {
             <Route path="/play" element={<GamePlayer />} />
             <Route path="/admin/*" element={<Protected role="admin"><AdminApp /></Protected>} />
             <Route path="/advertiser/*" element={<Protected role="advertiser"><AdvertiserApp /></Protected>} />
+            <Route path="/agency/*" element={<Protected role="agency"><AgencyApp /></Protected>} />
             <Route path="/driver/*" element={<Protected role="driver"><DriverApp /></Protected>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

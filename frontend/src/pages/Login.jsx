@@ -17,7 +17,7 @@ export default function Login() {
     try {
       const u = await login(email, password);
       toast.success(`Welcome, ${u.name || u.email}`);
-      nav(u.role === "admin" ? "/admin" : u.role === "advertiser" ? "/advertiser" : "/driver");
+      nav(u.role === "admin" ? "/admin" : u.role === "advertiser" ? "/advertiser" : u.role === "agency" ? "/agency" : "/driver");
     } catch (err) {
       toast.error(formatError(err.response?.data?.detail) || err.message);
     } finally { setLoading(false); }

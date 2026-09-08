@@ -1,0 +1,65 @@
+{
+  "summary": "Phase 3 backend testing complete. Added /app/backend/tests/test_owm_phase3.py with 36 tests covering: cities CRUD (admin-only 403 check), groups CRUD with kind filter + invalid-kind 422, bulk device ops (suspend/activate/sync-queues-refresh_playlist/assign_campaign addToSet/remote_command whitelist + unknown 400), per-device command (poll consumes; 2nd poll empty; disallowed command 400), advanced health alerts (storage_full high / battery_low medium / temp_high high / camera_fail medium) with 15-min dedupe verified, alert resolve, scan-offline, pricing CRUD, revenue summary + by-advertiser, admin earnings list, payout + driver /driver/earnings persistence, admin create agency + admin/users list + PATCH permissions, agency link/advertisers/summary flow, API keys full lifecycle (create returns owm_ raw + prefix; list hides key_hash; external /external/v1/campaigns 200 with scope, /analytics/summary 403 missing scope, bogus key 401, revoked key 401), BI summary block shape, BI heatmap (empty and populated), campaign areas owner 200 + non-owner 404, extended reports export parametrized over 7 kinds (drivers/network/revenue/campaigns/devices/audience/engagement) both CSV/PDF plus bad-kind and bad-fmt 400. Result: 32/36 phase-3 tests PASSED, 4 FAILED — all 4 failures point to ONE production bug: the extended reports handler (kinds drivers/network/revenue and pdf format) is unreachable because FastAPI resolves routes in registration order (first-match wins), and the phase-2 handler at server.py:1332 shadows the phase-3 handler at server.py:1964. The review-request context note claiming 'FastAPI keeps the LAST registered handler' is factually incorrect. Regression: prior 57 (Phase 1 + 1.5 + 2) tests still pass.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/admin/reports/export?kind=drivers|network|revenue and fmt=pdf", "issue": "Phase-3 extended kinds return 400 'Unknown report kind' because FastAPI resolves routes in registration order (first-match wins) — the phase-2 handler at server.py:1332 shadows the phase-3 handler at server.py:1964. All drivers/network/revenue exports and the PDF path are DEAD CODE. Fix: delete the phase-2 handler (or rename its path), OR move the phase-3 handler above the phase-2 handler.", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/admin/users", "issue": "Hardcoded to_list(500) with no pagination — once accumulated admin+agency users exceed 500, freshly created records can silently drop out of the returned window. Observed during testing: newly created agency user did not appear in list on a busy DB."},
+      {"endpoint": "POST /api/admin/users", "issue": "role=admin can be created via this endpoint (regex ^(agency|admin|advertiser|driver)$) by any existing admin, but there is no confirmation step or audit-severity flag — one admin can escalate anyone to admin silently."},
+      {"endpoint": "PATCH /api/admin/users/{uid}/permissions", "issue": "Allows changing role via 'role' field with no validation on the new role (accepts any string) — passing role='foo' will corrupt the user record because require_role never matches 'foo'."},
+      {"endpoint": "POST /api/admin/devices/bulk-op action=assign_campaign", "issue": "Does not verify that the campaign exists or that the caller/advertiser owns it before addToSet target_devices — an admin bug or typo can inject device IDs into an unrelated campaign."},
+      {"endpoint": "GET /api/admin/earnings", "issue": "earnings computed as active_days * $50 with active_days derived from device.created_at — a device that has been offline for a year still accrues 365 days of 'earnings'. Not tied to actual playback/heartbeat/active-time; will overstate driver pay."},
+      {"endpoint": "GET /api/driver/earnings", "issue": "Same active_days flaw as /admin/earnings; also sums across ALL of the driver's devices with no de-dup on inactive/suspended devices — suspended device still earns."},
+      {"endpoint": "POST /api/admin/earnings/payout", "issue": "No validation that driver_id exists, no check payout <= pending; can create negative or over-payment records freely."},
+      {"endpoint": "GET /api/admin/bi/heatmap", "issue": "Matches vehicles by regex on operating_area for the city name — 'Bengaluru' will falsely match 'Bengaluru Rural' etc. Also empty target_cities global-leak pattern from iter3 still relevant."},
+      {"endpoint": "POST /api/player/health", "issue": "Alert thresholds hardcoded (storage>90, battery<15, temp>60) — not configurable per device/fleet."},
+      {"endpoint": "GET /api/external/v1/*", "issue": "verify_api_key updates last_used on every call but there is no rate-limiting, no per-key usage log, no IP allowlist — an API key with read:campaigns exposes the ENTIRE db.campaigns collection (limit 500) with no tenant scoping."},
+      {"endpoint": "POST /api/admin/api-keys", "issue": "Scopes accepted are unvalidated (any string) — a typo like 'read:campiagns' silently creates a key that will never authorise anything, wasting operator time."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_owm_phase3.py",
+    "/app/backend/tests/test_owm_phase2_audience.py",
+    "/app/backend/tests/test_owm_phase2.py",
+    "/app/backend/tests/test_owm_backend.py",
+    "/app/test_reports/pytest/phase3_results.xml",
+    "/app/test_reports/pytest/regression_results.xml"
+  ],
+  "action_items": [
+    "CRITICAL — Fix duplicate /admin/reports/export handler: FastAPI first-match wins, phase-2 handler at server.py:1332 is shadowing the phase-3 handler at server.py:1964. Delete or rename one of them. This currently breaks drivers/network/revenue CSV and ALL PDF exports.",
+    "Paginate GET /api/admin/users (limit + skip + optional role query param) to avoid silent truncation at 500.",
+    "Validate 'role' in PATCH /api/admin/users/{uid}/permissions against the same regex used in AdminUserCreateIn.",
+    "Verify campaign existence in bulk_device_op action='assign_campaign' before addToSet target_devices; return 404 when the campaign_id is unknown.",
+    "Tie /admin/earnings + /driver/earnings to real playback/heartbeat activity instead of days-since-created_at; also skip Suspended devices.",
+    "Add server-side validation on POST /api/admin/earnings/payout: driver exists, amount>0, amount<=pending.",
+    "Rate-limit + tenant-scope /api/external/v1/* endpoints; validate scopes against a whitelist in POST /api/admin/api-keys.",
+    "Consider moving Phase-3 endpoints into a routers/ package — server.py is now 2032 lines."
+  ],
+  "critical_code_review_comments": [
+    "Route shadowing: server.py registers /admin/reports/export TWICE (lines 1332 and 1964). FastAPI uses first-match, so the phase-3 kinds drivers/network/revenue and the PDF branch are unreachable — this is a silent regression that would ship without the phase-3 tests catching it.",
+    "server.py grew from 1475 → 2032 lines in this phase (+557). Modularisation via APIRouter files is now overdue.",
+    "Cross-tenant leak in /api/external/v1/campaigns and /api/external/v1/analytics/summary — an API key with a single scope returns global data across all advertisers with no tenant filter. Should be scoped to created_by or an owner_advertiser_id on the key.",
+    "PATCH /api/admin/users/{uid}/permissions accepts arbitrary 'role' string without regex validation, unlike POST /api/admin/users. Inconsistent.",
+    "Bulk assign_campaign performs $addToSet on target_devices with NO existence check on campaign_id — silently no-ops if campaign_id is bogus (update_one match=0) and returns ok:True. Should raise 404.",
+    "Earnings engine is stub-quality: active_days = today - device.created_at (in days), fixed $50/day, no clamp, no verification of device Online status or playback events. Ships a payment surface that overpays every driver.",
+    "Alert dedupe key = (kind, device_id, resolved=false, at>=now-15min) — meta not part of the key, so two DIFFERENT storage thresholds (91% and 99%) collapse into one alert; loses severity fidelity.",
+    "GET /admin/api-keys returns doc without key_hash but STILL returns prefix + created_by + last_used — reasonable, but there is no endpoint to rotate a key (only delete then create), forcing consumers offline during rotation.",
+    "verify_api_key does not enforce that the key is bound to a specific role/permissions set beyond scopes — external clients cannot be audited alongside internal users in /admin/audit.",
+    "CORS still allow_origins=['*'] with allow_credentials=True — invalid combo per CORS spec; every prior iteration has flagged this."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_owm_phase3.py (new, 36 tests)"
+  ],
+  "success_rate": {
+    "backend": "91.5% overall (32/36 phase-3 pass + 57/57 regression = 89/93). All 4 phase-3 failures trace to ONE bug (duplicate route registration).",
+    "frontend": "not tested (backend-only per request)"
+  },
+  "test_credentials": "Admin: admin@onwheelsmedia.com / Admin@12345. All test data prefixed TEST_p3.",
+  "seed_data_creation": "Ephemeral TEST_p3 advertiser (+B), driver, vehicle, device, ad, campaign, cities, groups, pricing rows, alerts, agency user, api key, payouts. Persists in DB — no automated cleanup.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase-3 tests live in /app/backend/tests/test_owm_phase3.py and are order-dependent (loadscope pin per module). Run via `cd /app && python -m pytest backend/tests/test_owm_phase3.py -n 0` (serial) or drop `-n 0` for xdist. Setup pulls admin JWT, registers a fresh advertiser + advertiser B + driver, provisions vehicle+device+activation, creates an ad + campaign for the advertiser — DO NOT skip test_p3_00_setup. The 4 failing tests target the duplicate-route bug; once main agent removes the phase-2 handler at server.py:1332 (or renames its path) they should pass without test edits. /api/admin/users caps at to_list(500) so on very busy DBs a freshly-created user may not appear — test uses login-role-check instead of scanning the list.",
+  "rca of the issue": "FastAPI/Starlette route resolution iterates router.routes in registration order and returns the first path+method match — it does NOT prefer later registrations. server.py declares @api.get('/admin/reports/export') twice (lines 1332 and 1964). At import time both routes are appended to the router; at request time the phase-2 handler is hit first and 'kind not in {campaigns,devices,audience,engagement}' raises HTTPException(400, 'Unknown report kind'). Reproduction: `GET /api/admin/reports/export?kind=drivers&fmt=csv` with admin bearer returns 400. Mitigation options: (1) delete the earlier @api.get at line 1332 since the newer handler is a superset of kinds; (2) rename phase-3 path to /admin/reports/export/v2; (3) merge both handlers into one function. Recommended: option (1) — delete lines 1332-1359 (the older export_report) and keep the phase-3 export_report_v2 as the sole handler."
+}

@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import Shell from "@/pages/Shell";
-import { LayoutDashboard, Users, Car, Cpu, Building2, FileImage, Megaphone, ListOrdered, Newspaper, Cloud, QrCode, BarChart3, Wallet, Bell, ScrollText, Eye, Gamepad2, Shield, Upload } from "lucide-react";
+import { LayoutDashboard, Users, Car, Cpu, Building2, FileImage, Megaphone, ListOrdered, Newspaper, Cloud, QrCode, BarChart3, Wallet, Bell, ScrollText, Eye, Gamepad2, Shield, Upload, Map, Layers, DollarSign, TrendingUp, KeyRound, Radio, Sparkles, Terminal, AlertTriangle } from "lucide-react";
 import Dashboard from "@/pages/admin/sections/Dashboard";
 import DriversPage from "@/pages/admin/sections/Drivers";
 import VehiclesPage from "@/pages/admin/sections/Vehicles";
@@ -21,17 +21,32 @@ import Engagement from "@/pages/admin/sections/Engagement";
 import Games from "@/pages/admin/sections/Games";
 import Privacy from "@/pages/admin/sections/Privacy";
 import BulkImport from "@/pages/admin/sections/BulkImport";
+import BiDashboard from "@/pages/admin/sections/BiDashboard";
+import Cities from "@/pages/admin/sections/Cities";
+import Groups from "@/pages/admin/sections/Groups";
+import Pricing from "@/pages/admin/sections/Pricing";
+import Revenue from "@/pages/admin/sections/Revenue";
+import Earnings from "@/pages/admin/sections/Earnings";
+import ApiKeys from "@/pages/admin/sections/ApiKeys";
+import UsersAndRoles from "@/pages/admin/sections/UsersAndRoles";
+import Alerts from "@/pages/admin/sections/Alerts";
+import RemoteCommands from "@/pages/admin/sections/RemoteCommands";
 
 const nav = [
-  { key: "dashboard", to: "/admin", label: "Dashboard", icon: LayoutDashboard },
+  { key: "bi", to: "/admin", label: "Executive BI", icon: TrendingUp },
+  { key: "dashboard", to: "/admin/dashboard", label: "Operations", icon: LayoutDashboard },
+  { key: "cities", to: "/admin/cities", label: "Cities", icon: Map },
+  { key: "groups", to: "/admin/groups", label: "Groups", icon: Layers },
   { key: "drivers", to: "/admin/drivers", label: "Drivers", icon: Users },
   { key: "bulk", to: "/admin/bulk-import", label: "Bulk Import", icon: Upload },
   { key: "vehicles", to: "/admin/vehicles", label: "Vehicles", icon: Car },
   { key: "devices", to: "/admin/devices", label: "Devices", icon: Cpu },
+  { key: "remote", to: "/admin/remote", label: "Remote Ops", icon: Terminal },
+  { key: "alerts", to: "/admin/alerts", label: "Alerts", icon: AlertTriangle },
   { key: "advertisers", to: "/admin/advertisers", label: "Advertisers", icon: Building2 },
   { key: "ads", to: "/admin/ads", label: "Advertisements", icon: FileImage },
   { key: "campaigns", to: "/admin/campaigns", label: "Campaigns", icon: Megaphone },
-  { key: "games", to: "/admin/games", label: "Mini-Games", icon: Gamepad2 },
+  { key: "games", to: "/admin/games", label: "Game Studio", icon: Gamepad2 },
   { key: "audience", to: "/admin/audience", label: "AI Audience", icon: Eye },
   { key: "engagement", to: "/admin/engagement", label: "Engagement", icon: BarChart3 },
   { key: "playlists", to: "/admin/playlists", label: "Playlists", icon: ListOrdered },
@@ -39,7 +54,12 @@ const nav = [
   { key: "weather", to: "/admin/weather", label: "Weather", icon: Cloud },
   { key: "qr", to: "/admin/qr", label: "QR Campaigns", icon: QrCode },
   { key: "reports", to: "/admin/reports", label: "Reports", icon: BarChart3 },
-  { key: "payments", to: "/admin/payments", label: "Payments", icon: Wallet },
+  { key: "revenue", to: "/admin/revenue", label: "Revenue", icon: DollarSign },
+  { key: "pricing", to: "/admin/pricing", label: "Pricing Engine", icon: Sparkles },
+  { key: "earnings", to: "/admin/earnings", label: "Driver Earnings", icon: Wallet },
+  { key: "payments", to: "/admin/payments", label: "Invoices", icon: Wallet },
+  { key: "users", to: "/admin/users", label: "Team & Roles", icon: Users },
+  { key: "apikeys", to: "/admin/api-keys", label: "API Keys", icon: KeyRound },
   { key: "privacy", to: "/admin/privacy", label: "Privacy", icon: Shield },
   { key: "notifications", to: "/admin/notifications", label: "Notifications", icon: Bell },
   { key: "audit", to: "/admin/audit", label: "Audit Logs", icon: ScrollText },
@@ -49,10 +69,15 @@ export default function AdminApp() {
   return (
     <Shell nav={nav} title="Admin">
       <Routes>
-        <Route index element={<Dashboard />} />
+        <Route index element={<BiDashboard />} />
+        <Route path="dashboard" element={<Dashboard />} />
+        <Route path="cities" element={<Cities />} />
+        <Route path="groups" element={<Groups />} />
         <Route path="drivers" element={<DriversPage />} />
         <Route path="vehicles" element={<VehiclesPage />} />
         <Route path="devices" element={<DevicesPage />} />
+        <Route path="remote" element={<RemoteCommands />} />
+        <Route path="alerts" element={<Alerts />} />
         <Route path="advertisers" element={<Advertisers />} />
         <Route path="ads" element={<AdsPage />} />
         <Route path="campaigns" element={<CampaignsPage />} />
@@ -66,7 +91,12 @@ export default function AdminApp() {
         <Route path="privacy" element={<Privacy />} />
         <Route path="bulk-import" element={<BulkImport />} />
         <Route path="reports" element={<Reports />} />
+        <Route path="revenue" element={<Revenue />} />
+        <Route path="pricing" element={<Pricing />} />
+        <Route path="earnings" element={<Earnings />} />
         <Route path="payments" element={<Payments />} />
+        <Route path="users" element={<UsersAndRoles />} />
+        <Route path="api-keys" element={<ApiKeys />} />
         <Route path="notifications" element={<Notifications />} />
         <Route path="audit" element={<AuditLogs />} />
         <Route path="*" element={<Navigate to="/admin" replace />} />

@@ -1,64 +1,92 @@
 import { useEffect, useState } from "react";
 import api from "@/lib/api";
 import { toast } from "sonner";
-
-const DEFAULT_QUIZ = {
-  questions: [
-    { question: "What powers On Wheels Media screens?", options: ["Diesel","Solar","Cloud","Steam"], correct: 2 },
-    { question: "How many autos in the network?", options: ["10","500+","2","0"], correct: 1 },
-  ]
-};
-const DEFAULT_SPIN = { segments: [{label:"10% OFF"},{label:"Free Coffee"},{label:"Try Again"},{label:"20% OFF"}] };
+import { Plus, Trash2 } from "lucide-react";
 
 export default function Games() {
   const [rows, setRows] = useState([]);
-  const [form, setForm] = useState({ name: "", game_type: "quiz", config_text: JSON.stringify(DEFAULT_QUIZ, null, 2) });
+  const [name, setName] = useState("");
+  const [type, setType] = useState("quiz");
+  const [questions, setQuestions] = useState([{ question: "", options: ["", "", "", ""], correct: 0 }]);
+  const [segments, setSegments] = useState([{ label: "10% OFF" }, { label: "Try Again" }, { label: "Free Coffee" }, { label: "Better Luck" }]);
   const load = () => api.get("/admin/games").then(r => setRows(r.data));
   useEffect(load, []);
   const create = async () => {
-    try {
-      const config = JSON.parse(form.config_text || "{}");
-      await api.post("/admin/games", { name: form.name, game_type: form.game_type, config, active: true });
-      toast.success("Game created");
-      setForm({ name: "", game_type: "quiz", config_text: JSON.stringify(DEFAULT_QUIZ, null, 2) });
-      load();
-    } catch (e) { toast.error("Invalid JSON or create failed"); }
+    const config = type === "quiz" ? { questions } : { segments };
+    try { await api.post("/admin/games", { name, game_type: type, config, active: true }); toast.success("Game created"); setName(""); load(); }
+    catch { toast.error("Failed"); }
   };
   const remove = async (id) => { await api.delete(`/admin/games/${id}`); load(); };
-  const switchType = (t) => {
-    setForm({ ...form, game_type: t, config_text: JSON.stringify(t==="quiz"?DEFAULT_QUIZ:DEFAULT_SPIN, null, 2) });
-  };
+  const updateQ = (i, field, val) => setQuestions(qs => qs.map((q,idx) => idx===i ? {...q, [field]: val} : q));
+  const updateOpt = (qi, oi, val) => setQuestions(qs => qs.map((q,idx) => idx===qi ? {...q, options: q.options.map((o,j)=>j===oi?val:o)} : q));
+  const addQ = () => setQuestions([...questions, { question: "", options: ["","","",""], correct: 0 }]);
+  const rmQ = (i) => setQuestions(questions.filter((_,idx)=>idx!==i));
+  const addSeg = () => setSegments([...segments, { label: "" }]);
+  const rmSeg = (i) => setSegments(segments.filter((_,idx)=>idx!==i));
+  const updSeg = (i, val) => setSegments(segments.map((s,idx)=>idx===i?{label:val}:s));
+
   return (
     <div data-testid="admin-games" className="space-y-6">
-      <div className="border border-zinc-800 p-4 grid gap-3">
+      <div className="border border-zinc-800 p-6 space-y-4">
+        <div className="text-xs uppercase tracking-widest text-yellow-400">Game Studio · Visual builder</div>
         <div className="grid md:grid-cols-2 gap-3">
-          <input data-testid="game-name" placeholder="Game name" value={form.name} onChange={e=>setForm({...form, name:e.target.value})} className="bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm rounded" />
-          <select data-testid="game-type" value={form.game_type} onChange={e=>switchType(e.target.value)} className="bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm rounded">
+          <input data-testid="game-name" placeholder="Game name" value={name} onChange={e=>setName(e.target.value)} className="bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm rounded" />
+          <select data-testid="game-type" value={type} onChange={e=>setType(e.target.value)} className="bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm rounded">
             <option value="quiz">Quiz</option>
             <option value="spin">Spin wheel</option>
-            <option value="memory">Memory</option>
-            <option value="reaction">Reaction</option>
-            <option value="brand">Brand game</option>
           </select>
         </div>
-        <div>
-          <label className="text-xs uppercase tracking-widest text-zinc-500 mb-2 block">Config (JSON)</label>
-          <textarea data-testid="game-config" value={form.config_text} onChange={e=>setForm({...form, config_text:e.target.value})} className="w-full bg-zinc-900 border border-zinc-800 font-mono text-xs p-3 rounded h-56" />
-        </div>
-        <button data-testid="game-create" onClick={create} disabled={!form.name} className="bg-yellow-400 hover:bg-yellow-300 disabled:opacity-40 text-zinc-950 px-4 py-2 rounded font-medium text-sm">Create game</button>
+
+        {type === "quiz" && (
+          <div className="space-y-4">
+            {questions.map((q, i) => (
+              <div key={i} className="border border-zinc-800 p-4 space-y-2">
+                <div className="flex gap-2 items-center">
+                  <span className="text-xs text-zinc-500 font-mono">Q{i+1}</span>
+                  <input data-testid={`q-text-${i}`} placeholder="Question" value={q.question} onChange={e=>updateQ(i, "question", e.target.value)} className="flex-1 bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm rounded" />
+                  {questions.length > 1 && <button onClick={()=>rmQ(i)} className="text-red-400 text-xs"><Trash2 className="w-4 h-4"/></button>}
+                </div>
+                <div className="grid md:grid-cols-2 gap-2">
+                  {q.options.map((opt, oi) => (
+                    <label key={oi} className="flex items-center gap-2">
+                      <input data-testid={`q-correct-${i}-${oi}`} type="radio" name={`correct-${i}`} checked={q.correct===oi} onChange={()=>updateQ(i, "correct", oi)} className="accent-yellow-400" />
+                      <input data-testid={`q-opt-${i}-${oi}`} placeholder={`Option ${oi+1}`} value={opt} onChange={e=>updateOpt(i, oi, e.target.value)} className="flex-1 bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm rounded" />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <button data-testid="add-q" onClick={addQ} className="text-xs flex items-center gap-1 border border-zinc-800 hover:border-yellow-400 px-3 py-2 rounded"><Plus className="w-3 h-3"/> Add question</button>
+          </div>
+        )}
+
+        {type === "spin" && (
+          <div className="space-y-3">
+            {segments.map((s, i) => (
+              <div key={i} className="flex gap-2">
+                <input data-testid={`seg-${i}`} placeholder="Segment label" value={s.label} onChange={e=>updSeg(i, e.target.value)} className="flex-1 bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm rounded" />
+                {segments.length > 2 && <button onClick={()=>rmSeg(i)} className="text-red-400 text-xs px-2"><Trash2 className="w-4 h-4"/></button>}
+              </div>
+            ))}
+            <button data-testid="add-seg" onClick={addSeg} className="text-xs flex items-center gap-1 border border-zinc-800 hover:border-yellow-400 px-3 py-2 rounded"><Plus className="w-3 h-3"/> Add segment</button>
+          </div>
+        )}
+
+        <button data-testid="game-create" onClick={create} disabled={!name} className="bg-yellow-400 hover:bg-yellow-300 disabled:opacity-40 text-zinc-950 px-4 py-2 rounded font-medium text-sm">Save game</button>
       </div>
+
       <div className="border border-zinc-800">
         {rows.map(g => (
           <div key={g.id} className="p-4 border-b border-zinc-800 last:border-0 flex justify-between hover:bg-zinc-900">
             <div>
-              <div className="font-medium">{g.name} <span className="text-xs text-zinc-500 ml-2 uppercase">{g.game_type}</span></div>
+              <div className="font-medium">{g.name} <span className="text-xs text-zinc-500 uppercase ml-2">{g.game_type}</span></div>
               <div className="text-xs text-zinc-500 mt-1">Plays: {g.plays || 0} · Completions: {g.completions || 0}</div>
               <div className="text-xs text-yellow-400 mt-1 font-mono">ID: {g.id}</div>
             </div>
-            <button data-testid={`game-delete-${g.id}`} onClick={()=>remove(g.id)} className="text-xs text-red-400 hover:text-red-300 h-fit">Delete</button>
+            <button data-testid={`game-delete-${g.id}`} onClick={()=>remove(g.id)} className="text-xs text-red-400 h-fit">Delete</button>
           </div>
         ))}
-        {rows.length===0 && <div className="p-12 text-center text-zinc-500">No games yet. Create a quiz above.</div>}
+        {rows.length===0 && <div className="p-12 text-center text-zinc-500">No games yet. Create one above.</div>}
       </div>
     </div>
   );

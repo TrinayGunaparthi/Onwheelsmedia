@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import api, { BACKEND_URL } from "@/lib/api";
 import { simulate, topKey } from "@/lib/audience";
+import { detectSample } from "@/lib/realCamera";
 
 const HEARTBEAT_MS = 30000;
 const SYNC_MS = 60000;
@@ -95,12 +96,13 @@ export default function KioskPlayer() {
     api.get("/player/privacy", { headers: authHeaders() }).then(r => setPrivacy(r.data)).catch(() => {});
   }, [phase, authHeaders]);
 
-  // Audience sampler (privacy-first): local anonymous aggregation, never raw frames
+  // Audience sampler (privacy-first): tries real camera via face-api.js, falls back to simulator
   useEffect(() => {
     if (phase !== "ready") return;
     if (privacy.camera_enabled === false) return;
     const tick = async () => {
-      const sample = simulate();
+      let sample;
+      try { sample = await detectSample(); } catch { sample = simulate(); }
       setAudience(sample);
       audienceRef.current = sample;
       try { await api.post("/player/audience", sample, { headers: authHeaders() }); } catch {}
@@ -196,7 +198,7 @@ export default function KioskPlayer() {
         <div><span className="text-yellow-400">{deviceCode}</span> · <span className={online?"text-green-400":"text-red-400"}>{online?"ONLINE":"OFFLINE"}</span></div>
         {audience && privacy.camera_enabled !== false && (
           <div className="text-cyan-400" data-testid="audience-indicator">
-            👥 {audience.viewers} · ATT {audience.attention_score} · <span className="text-zinc-400">AI sim</span>
+            👥 {audience.viewers} · ATT {audience.attention_score} · <span className="text-zinc-400">{audience.source === "face_api" ? "camera" : "AI sim"}</span>
           </div>
         )}
       </div>

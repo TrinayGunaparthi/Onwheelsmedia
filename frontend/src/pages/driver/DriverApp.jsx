@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import Shell from "@/pages/Shell";
 import api from "@/lib/api";
-import { LayoutDashboard, User, Cpu } from "lucide-react";
+import { LayoutDashboard, User, Cpu, Wallet } from "lucide-react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -9,6 +9,7 @@ const nav = [
   { key: "dash", to: "/driver", label: "Dashboard", icon: LayoutDashboard },
   { key: "profile", to: "/driver/profile", label: "My Profile", icon: User },
   { key: "device", to: "/driver/device", label: "Device", icon: Cpu },
+  { key: "earnings", to: "/driver/earnings", label: "Earnings", icon: Wallet },
 ];
 
 function Dashboard() {
@@ -162,8 +163,37 @@ export default function DriverApp() {
         <Route index element={<Dashboard />} />
         <Route path="profile" element={<Profile />} />
         <Route path="device" element={<Device />} />
+        <Route path="earnings" element={<Earnings />} />
         <Route path="*" element={<Navigate to="/driver" replace />} />
       </Routes>
     </Shell>
+  );
+}
+
+function Earnings() {
+  const [d, setD] = useState({});
+  useEffect(() => { api.get("/driver/earnings").then(r => setD(r.data)); }, []);
+  return (
+    <div data-testid="driver-earnings" className="space-y-6">
+      <div className="grid grid-cols-3 gap-px bg-zinc-800">
+        {[{l:"Total earned",v:`$${d.earnings_total||0}`,tint:"text-yellow-400"},{l:"Paid out",v:`$${d.paid||0}`,tint:"text-green-400"},{l:"Pending",v:`$${d.pending||0}`,tint:"text-orange-400"}].map((c,i)=>(
+          <div key={i} className="bg-zinc-950 p-6">
+            <div className="text-xs uppercase tracking-widest text-zinc-500">{c.l}</div>
+            <div className={`font-display text-4xl font-bold mt-2 ${c.tint}`}>{c.v}</div>
+          </div>
+        ))}
+      </div>
+      <div className="text-xs text-zinc-500 uppercase tracking-widest">Rate: <span className="text-yellow-400 font-mono">${d.per_day_rate||0}</span>/day per active device</div>
+      <div className="border border-zinc-800">
+        <div className="p-3 bg-zinc-900 text-xs uppercase tracking-widest text-zinc-500">Payment history</div>
+        {(d.payouts || []).map(p => (
+          <div key={p.id} className="p-4 border-t border-zinc-800 flex justify-between hover:bg-zinc-900">
+            <div><div className="font-medium text-green-400">+${p.amount}</div><div className="text-xs text-zinc-500">{p.note || "Payout"}</div></div>
+            <div className="text-xs text-zinc-500">{p.at?.slice(0,16).replace("T"," ")}</div>
+          </div>
+        ))}
+        {(d.payouts || []).length===0 && <div className="p-12 text-center text-zinc-500">No payouts yet.</div>}
+      </div>
+    </div>
   );
 }

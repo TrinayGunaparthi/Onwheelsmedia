@@ -1324,64 +1324,10 @@ async def advertiser_analytics(user=Depends(require_role("advertiser"))):
         "per_campaign": per_camp
     }
 
-# ---------- reports export (CSV/PDF) ----------
+# ---------- reports export (CSV/PDF) — see phase-3 export_report_v2 below ----------
 import io
 import csv
 from fastapi.responses import StreamingResponse
-
-@api.get("/admin/reports/export")
-async def export_report(kind: str = "campaigns", fmt: str = "csv", days: int = 7, user=Depends(require_role("admin"))):
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    if kind == "campaigns":
-        rows = await db.campaigns.find().to_list(500)
-        headers = ["name", "advertiser_id", "start_date", "end_date", "status", "budget", "objective"]
-        data = [[r.get(h, "") for h in headers] for r in rows]
-    elif kind == "devices":
-        rows = await db.devices.find().to_list(500)
-        headers = ["device_code", "status", "last_online", "app_version", "network"]
-        data = [[r.get(h, "") for h in headers] for r in rows]
-    elif kind == "audience":
-        rows = await db.audience_samples.find({"at": {"$gte": since}}).to_list(5000)
-        headers = ["at", "device_code", "viewers", "attention_score", "age_distribution", "gender_distribution"]
-        data = [[r.get(h, "") if h != "age_distribution" and h != "gender_distribution" else str(r.get(h, {})) for h in headers] for r in rows]
-    elif kind == "engagement":
-        rows = await db.game_sessions.find({"started_at": {"$gte": since}}).to_list(5000)
-        headers = ["session_id", "game_id", "campaign_id", "device_id", "started_at", "completed_at", "score", "status"]
-        data = [[r.get(h, "") for h in headers] for r in rows]
-    else:
-        raise HTTPException(400, "Unknown report kind")
-
-    if fmt == "csv":
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(headers)
-        writer.writerows(data)
-        buf.seek(0)
-        return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{kind}_{days}d.csv"'})
-    elif fmt == "pdf":
-        from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.lib import colors
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-        from reportlab.lib.styles import getSampleStyleSheet
-        buf = io.BytesIO()
-        doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=32, bottomMargin=24)
-        styles = getSampleStyleSheet()
-        story = [Paragraph(f"On Wheels Media — {kind.title()} Report ({days} days)", styles["Title"]), Spacer(1, 12)]
-        table_data = [headers] + [[str(x)[:60] for x in row] for row in data[:500]]
-        t = Table(table_data, repeatRows=1)
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#facc15")),
-            ("TEXTCOLOR", (0,0), (-1,0), colors.black),
-            ("FONTSIZE", (0,0), (-1,-1), 8),
-            ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
-            ("VALIGN", (0,0), (-1,-1), "TOP"),
-        ]))
-        story.append(t)
-        doc.build(story)
-        buf.seek(0)
-        return StreamingResponse(iter([buf.getvalue()]), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{kind}_{days}d.pdf"'})
-    else:
-        raise HTTPException(400, "fmt must be csv or pdf")
 
 # ---------- campaign targeting update ----------
 class CampaignRulesIn(BaseModel):
@@ -1462,6 +1408,571 @@ async def bulk_import_drivers(file: UploadFile = File(...), user=Depends(require
     await audit(user, "bulk_import_drivers", "driver", "", {"imported": imported, "failed": len(failed)})
     return {"imported": imported, "failed_count": len(failed), "failed": failed[:20]}
 
+
+# ============================================================
+# PHASE 3 — Enterprise DOOH platform
+# ============================================================
+
+# ---------- cities / areas / groups ----------
+class CityIn(BaseModel):
+    name: str
+    state: str = ""
+    areas: List[str] = []
+    lat: float = 0.0
+    lng: float = 0.0
+
+@api.get("/admin/cities")
+async def list_cities(user=Depends(require_role("admin"))):
+    docs = await db.cities.find().sort("name", 1).to_list(200)
+    return serialize_list(docs)
+
+@api.post("/admin/cities")
+async def create_city(payload: CityIn, user=Depends(require_role("admin"))):
+    doc = {**payload.model_dump(), "created_at": now_iso()}
+    res = await db.cities.insert_one(doc)
+    doc.pop("_id", None); doc["id"] = str(res.inserted_id)
+    return doc
+
+@api.delete("/admin/cities/{cid}")
+async def delete_city(cid: str, user=Depends(require_role("admin"))):
+    await db.cities.delete_one({"_id": oid(cid)})
+    return {"ok": True}
+
+class GroupIn(BaseModel):
+    name: str
+    kind: str = Field(pattern="^(device|vehicle|route|city|campaign)$")
+    member_ids: List[str] = []
+    description: Optional[str] = ""
+
+@api.get("/admin/groups")
+async def list_groups(kind: Optional[str] = None, user=Depends(require_role("admin"))):
+    q = {"kind": kind} if kind else {}
+    docs = await db.groups.find(q).sort("created_at", -1).to_list(500)
+    return serialize_list(docs)
+
+@api.post("/admin/groups")
+async def create_group(payload: GroupIn, user=Depends(require_role("admin"))):
+    doc = {**payload.model_dump(), "created_at": now_iso()}
+    res = await db.groups.insert_one(doc)
+    doc.pop("_id", None); doc["id"] = str(res.inserted_id)
+    return doc
+
+@api.patch("/admin/groups/{gid}")
+async def update_group(gid: str, payload: GroupIn, user=Depends(require_role("admin"))):
+    await db.groups.update_one({"_id": oid(gid)}, {"$set": payload.model_dump()})
+    return serialize(await db.groups.find_one({"_id": oid(gid)}))
+
+@api.delete("/admin/groups/{gid}")
+async def delete_group(gid: str, user=Depends(require_role("admin"))):
+    await db.groups.delete_one({"_id": oid(gid)})
+    return {"ok": True}
+
+# ---------- bulk device operations ----------
+class BulkDeviceOpIn(BaseModel):
+    device_ids: List[str]
+    action: str  # suspend|activate|sync|assign_campaign|remote_command
+    payload: Dict[str, Any] = {}
+
+@api.post("/admin/devices/bulk-op")
+async def bulk_device_op(body: BulkDeviceOpIn, user=Depends(require_role("admin"))):
+    action = body.action
+    ids = [oid(x) for x in body.device_ids]
+    if action == "suspend":
+        await db.devices.update_many({"_id": {"$in": ids}}, {"$set": {"status": "Suspended"}})
+    elif action == "activate":
+        await db.devices.update_many({"_id": {"$in": ids}}, {"$set": {"status": "Approved"}})
+    elif action == "sync":
+        # queue a "refresh_playlist" command for each device
+        for d in body.device_ids:
+            await db.device_commands.insert_one({"device_id": d, "command": "refresh_playlist", "payload": {}, "at": now_iso(), "consumed": False})
+    elif action == "assign_campaign":
+        cid = body.payload.get("campaign_id")
+        if not cid: raise HTTPException(400, "campaign_id required")
+        camp = await db.campaigns.find_one({"_id": oid(cid)})
+        if not camp: raise HTTPException(404, "Campaign not found")
+        await db.campaigns.update_one({"_id": oid(cid)}, {"$addToSet": {"target_devices": {"$each": body.device_ids}}})
+    elif action == "remote_command":
+        cmd = body.payload.get("command", "")
+        if cmd not in ("restart_player", "refresh_playlist", "clear_cache", "reload_config"):
+            raise HTTPException(400, "Unsupported command")
+        for d in body.device_ids:
+            await db.device_commands.insert_one({"device_id": d, "command": cmd, "payload": body.payload, "at": now_iso(), "consumed": False})
+    else:
+        raise HTTPException(400, "Unknown action")
+    await audit(user, f"bulk_{action}", "device", ",".join(body.device_ids[:5])+("…" if len(body.device_ids)>5 else ""), {"count": len(body.device_ids), "payload": body.payload})
+    return {"ok": True, "affected": len(body.device_ids)}
+
+# ---------- remote device commands (per device) ----------
+@api.post("/admin/devices/{did}/command")
+async def send_device_command(did: str, body: Dict[str, Any], user=Depends(require_role("admin"))):
+    cmd = body.get("command", "")
+    if cmd not in ("restart_player", "refresh_playlist", "clear_cache", "reload_config", "disable", "enable"):
+        raise HTTPException(400, "Unsupported command")
+    await db.device_commands.insert_one({"device_id": did, "command": cmd, "payload": body, "at": now_iso(), "consumed": False})
+    await audit(user, "device_command", "device", did, {"command": cmd})
+    return {"ok": True}
+
+@api.get("/player/commands")
+async def poll_commands(dev=Depends(get_current_device)):
+    did = str(dev["_id"])
+    cmds = await db.device_commands.find({"device_id": did, "consumed": False}).sort("at", 1).to_list(20)
+    if cmds:
+        await db.device_commands.update_many({"_id": {"$in": [c["_id"] for c in cmds]}}, {"$set": {"consumed": True, "consumed_at": now_iso()}})
+    return {"commands": [{"command": c["command"], "payload": c.get("payload", {}), "at": c.get("at")} for c in cmds]}
+
+# ---------- advanced device health (extends heartbeat) ----------
+class DeviceHealthIn(BaseModel):
+    cpu_pct: Optional[float] = None
+    ram_pct: Optional[float] = None
+    storage_pct: Optional[float] = None
+    temperature_c: Optional[float] = None
+    battery: Optional[int] = None
+    charging: Optional[bool] = None
+    network: Optional[str] = ""
+    app_version: Optional[str] = ""
+    camera_ok: Optional[bool] = None
+    ai_ok: Optional[bool] = None
+
+@api.post("/player/health")
+async def report_health(payload: DeviceHealthIn, dev=Depends(get_current_device)):
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    updates["last_online"] = now_iso()
+    updates["status"] = "Online"
+    await db.devices.update_one({"_id": dev["_id"]}, {"$set": updates})
+    # Auto alerts
+    dcode = dev.get("device_code")
+    if payload.storage_pct is not None and payload.storage_pct > 90:
+        await create_alert("storage_full", f"Storage almost full on {dcode} ({payload.storage_pct}%)", severity="high", device_id=str(dev["_id"]))
+    if payload.battery is not None and payload.battery < 15 and payload.charging is False:
+        await create_alert("battery_low", f"Battery low on {dcode} ({payload.battery}%)", severity="medium", device_id=str(dev["_id"]))
+    if payload.temperature_c is not None and payload.temperature_c > 60:
+        await create_alert("temp_high", f"High temperature on {dcode} ({payload.temperature_c}°C)", severity="high", device_id=str(dev["_id"]))
+    if payload.camera_ok is False:
+        await create_alert("camera_fail", f"Camera unavailable on {dcode}", severity="medium", device_id=str(dev["_id"]))
+    return {"ok": True}
+
+# ---------- alerts ----------
+async def create_alert(kind: str, message: str, severity: str = "info", device_id: str = "", meta: Dict = None):
+    # dedupe: don't insert same open alert twice within 15 min for same kind+device
+    recent = await db.alerts.find_one({"kind": kind, "device_id": device_id, "resolved": False,
+                                         "at": {"$gte": (datetime.now(timezone.utc)-timedelta(minutes=15)).isoformat()}})
+    if recent:
+        return
+    await db.alerts.insert_one({"kind": kind, "message": message, "severity": severity,
+                                 "device_id": device_id, "meta": meta or {}, "at": now_iso(), "resolved": False})
+
+@api.get("/admin/alerts")
+async def list_alerts(resolved: bool = False, user=Depends(require_role("admin"))):
+    docs = await db.alerts.find({"resolved": resolved}).sort("at", -1).limit(200).to_list(200)
+    return serialize_list(docs)
+
+@api.post("/admin/alerts/{aid}/resolve")
+async def resolve_alert(aid: str, user=Depends(require_role("admin"))):
+    await db.alerts.update_one({"_id": oid(aid)}, {"$set": {"resolved": True, "resolved_at": now_iso(), "resolved_by": user["email"]}})
+    return {"ok": True}
+
+# Background offline scan — expose as an admin trigger; production would run via crons
+@api.post("/admin/alerts/scan-offline")
+async def scan_offline(user=Depends(require_role("admin"))):
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    offline = await db.devices.find({"last_online": {"$lt": cutoff}, "status": {"$in": ["Online", "Approved"]}}).to_list(500)
+    n = 0
+    for d in offline:
+        await create_alert("device_offline", f"Device {d.get('device_code')} offline (last seen {d.get('last_online')})", severity="medium", device_id=str(d["_id"]))
+        n += 1
+    return {"scanned": len(offline), "alerts_created": n}
+
+# ---------- pricing engine ----------
+class PricingIn(BaseModel):
+    name: str
+    kind: str  # base|city|time|advertiser|agency
+    conditions: Dict[str, Any] = {}  # {city_id, hours_range, advertiser_id, ...}
+    unit: str = "per_day_per_device"  # per_play|per_day_per_device|per_impression|flat
+    amount: float = 0
+    currency: str = "usd"
+    active: bool = True
+
+@api.get("/admin/pricing")
+async def list_pricing(user=Depends(require_role("admin"))):
+    docs = await db.pricing.find().sort("created_at", -1).to_list(200)
+    return serialize_list(docs)
+
+@api.post("/admin/pricing")
+async def create_pricing(payload: PricingIn, user=Depends(require_role("admin"))):
+    doc = {**payload.model_dump(), "created_at": now_iso()}
+    res = await db.pricing.insert_one(doc)
+    doc.pop("_id", None); doc["id"] = str(res.inserted_id)
+    return doc
+
+@api.delete("/admin/pricing/{pid}")
+async def delete_pricing(pid: str, user=Depends(require_role("admin"))):
+    await db.pricing.delete_one({"_id": oid(pid)})
+    return {"ok": True}
+
+# ---------- revenue rollups ----------
+@api.get("/admin/revenue/summary")
+async def revenue_summary(user=Depends(require_role("admin"))):
+    now = datetime.now(timezone.utc)
+    today = now.date().isoformat()
+    month_start = now.replace(day=1).date().isoformat()
+    paid_q = {"payment_status": "paid"}
+    total = await db.payment_transactions.aggregate([{"$match": paid_q}, {"$group": {"_id": None, "s": {"$sum": "$amount"}}}]).to_list(1)
+    today_total = await db.payment_transactions.aggregate([{"$match": {**paid_q, "updated_at": {"$gte": today}}}, {"$group": {"_id": None, "s": {"$sum": "$amount"}}}]).to_list(1)
+    month_total = await db.payment_transactions.aggregate([{"$match": {**paid_q, "updated_at": {"$gte": month_start}}}, {"$group": {"_id": None, "s": {"$sum": "$amount"}}}]).to_list(1)
+    pending = await db.invoices.aggregate([{"$match": {"status": "Pending"}}, {"$group": {"_id": None, "s": {"$sum": "$amount"}}}]).to_list(1)
+    return {
+        "total_revenue": (total[0]["s"] if total else 0),
+        "today_revenue": (today_total[0]["s"] if today_total else 0),
+        "month_revenue": (month_total[0]["s"] if month_total else 0),
+        "pending_payments": (pending[0]["s"] if pending else 0),
+        "advertisers_count": await db.users.count_documents({"role": "advertiser"}),
+        "campaigns_active": await db.campaigns.count_documents({"status": "Active"}),
+    }
+
+@api.get("/admin/revenue/by-advertiser")
+async def revenue_by_advertiser(user=Depends(require_role("admin"))):
+    pipeline = [
+        {"$match": {"payment_status": "paid"}},
+        {"$group": {"_id": "$user_id", "spend": {"$sum": "$amount"}, "count": {"$sum": 1}}},
+        {"$sort": {"spend": -1}},
+        {"$limit": 100}
+    ]
+    rows = await db.payment_transactions.aggregate(pipeline).to_list(100)
+    out = []
+    for r in rows:
+        u = await db.users.find_one({"_id": oid(r["_id"])}) if r["_id"] else None
+        out.append({"advertiser_id": r["_id"], "email": u.get("email", "unknown") if u else "unknown", "name": u.get("name", "") if u else "", "spend": r["spend"], "count": r["count"]})
+    return out
+
+# ---------- driver earnings ----------
+def compute_earnings_per_day() -> float:
+    return float(os.environ.get("DRIVER_DAILY_RATE", "50"))  # $50/day default
+
+@api.get("/admin/earnings")
+async def list_earnings(user=Depends(require_role("admin"))):
+    devices = await db.devices.find({"status": {"$in": ["Approved", "Online"]}}).to_list(1000)
+    per_day = compute_earnings_per_day()
+    out = []
+    for d in devices:
+        drv = await db.drivers.find_one({"_id": oid(d["driver_id"])}) if d.get("driver_id") else None
+        if not drv: continue
+        active_days = 1
+        try:
+            active_days = max(1, (datetime.now(timezone.utc) - datetime.fromisoformat(d.get("created_at").replace("Z","+00:00")) if d.get("created_at") else timedelta(days=1)).days or 1)
+        except Exception:
+            active_days = 1
+        paid = await db.driver_payouts.aggregate([{"$match": {"driver_id": str(drv["_id"]), "status": "Paid"}}, {"$group": {"_id": None, "s": {"$sum": "$amount"}}}]).to_list(1)
+        paid_sum = paid[0]["s"] if paid else 0
+        earnings = active_days * per_day
+        out.append({
+            "driver_id": str(drv["_id"]),
+            "driver_name": drv.get("full_name"),
+            "email": drv.get("email"),
+            "device_code": d.get("device_code"),
+            "active_days": active_days,
+            "earnings_total": round(earnings, 2),
+            "paid": paid_sum,
+            "pending": round(earnings - paid_sum, 2),
+        })
+    return {"per_day_rate": per_day, "drivers": out}
+
+@api.get("/driver/earnings")
+async def my_earnings(user=Depends(require_role("driver"))):
+    drv = await db.drivers.find_one({"user_id": user["id"]})
+    if not drv: return {"earnings_total": 0, "paid": 0, "pending": 0, "payouts": []}
+    devices = await db.devices.find({"driver_id": str(drv["_id"])}).to_list(20)
+    per_day = compute_earnings_per_day()
+    earnings = sum(max(1, (datetime.now(timezone.utc) - datetime.fromisoformat(d["created_at"].replace("Z","+00:00")) ).days or 1) * per_day for d in devices if d.get("created_at"))
+    paid = await db.driver_payouts.aggregate([{"$match": {"driver_id": str(drv["_id"]), "status": "Paid"}}, {"$group": {"_id": None, "s": {"$sum": "$amount"}}}]).to_list(1)
+    paid_sum = paid[0]["s"] if paid else 0
+    payouts = await db.driver_payouts.find({"driver_id": str(drv["_id"])}).sort("at", -1).to_list(50)
+    return {"per_day_rate": per_day, "earnings_total": round(earnings, 2), "paid": paid_sum, "pending": round(earnings - paid_sum, 2), "payouts": serialize_list(payouts)}
+
+class PayoutIn(BaseModel):
+    driver_id: str
+    amount: float
+    note: Optional[str] = ""
+
+@api.post("/admin/earnings/payout")
+async def create_payout(payload: PayoutIn, user=Depends(require_role("admin"))):
+    if payload.amount <= 0:
+        raise HTTPException(400, "Amount must be positive")
+    drv = await db.drivers.find_one({"_id": oid(payload.driver_id)})
+    if not drv:
+        raise HTTPException(404, "Driver not found")
+    doc = {"driver_id": payload.driver_id, "amount": payload.amount, "note": payload.note, "status": "Paid", "at": now_iso(), "by": user["email"]}
+    res = await db.driver_payouts.insert_one(doc)
+    await audit(user, "payout", "driver", payload.driver_id, {"amount": payload.amount})
+    doc.pop("_id", None); doc["id"] = str(res.inserted_id)
+    return doc
+
+# ---------- agency role ----------
+class AgencyLinkIn(BaseModel):
+    advertiser_id: str  # user id
+
+@api.post("/agency/link")
+async def link_advertiser(payload: AgencyLinkIn, user=Depends(require_role("agency"))):
+    adv = await db.users.find_one({"_id": oid(payload.advertiser_id), "role": "advertiser"})
+    if not adv: raise HTTPException(404, "Advertiser not found")
+    await db.agency_links.update_one({"agency_id": user["id"], "advertiser_id": payload.advertiser_id},
+                                       {"$set": {"agency_id": user["id"], "advertiser_id": payload.advertiser_id, "at": now_iso()}}, upsert=True)
+    return {"ok": True}
+
+@api.get("/agency/advertisers")
+async def agency_advertisers(user=Depends(require_role("agency"))):
+    links = await db.agency_links.find({"agency_id": user["id"]}).to_list(200)
+    adv_ids = [l["advertiser_id"] for l in links]
+    out = []
+    for aid in adv_ids:
+        u = await db.users.find_one({"_id": oid(aid)})
+        if not u: continue
+        cnt = await db.campaigns.count_documents({"advertiser_id": aid})
+        spend = await db.payment_transactions.aggregate([{"$match": {"user_id": aid, "payment_status": "paid"}}, {"$group": {"_id": None, "s": {"$sum": "$amount"}}}]).to_list(1)
+        out.append({"id": aid, "email": u["email"], "name": u.get("name"), "company": u.get("company"), "campaigns": cnt, "spend": spend[0]["s"] if spend else 0})
+    return out
+
+@api.get("/agency/summary")
+async def agency_summary(user=Depends(require_role("agency"))):
+    links = await db.agency_links.find({"agency_id": user["id"]}).to_list(200)
+    adv_ids = [l["advertiser_id"] for l in links]
+    return {
+        "advertisers": len(adv_ids),
+        "campaigns": await db.campaigns.count_documents({"advertiser_id": {"$in": adv_ids}}),
+        "total_spend": (await db.payment_transactions.aggregate([{"$match": {"user_id": {"$in": adv_ids}, "payment_status": "paid"}}, {"$group": {"_id": None, "s": {"$sum": "$amount"}}}]).to_list(1) or [{}])[0].get("s", 0),
+    }
+
+# Allow agency registration by relaxing RegisterIn's regex — actually already limited to advertiser|driver.
+# Register agencies via admin:
+class AdminUserCreateIn(BaseModel):
+    email: EmailStr
+    password: str
+    name: str
+    role: str = Field(pattern="^(agency|admin|advertiser|driver)$")
+    permissions: List[str] = []
+
+@api.post("/admin/users")
+async def admin_create_user(payload: AdminUserCreateIn, user=Depends(require_role("admin"))):
+    email = payload.email.lower()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(400, "Email already exists")
+    doc = {"email": email, "password_hash": hash_password(payload.password), "name": payload.name,
+           "role": payload.role, "permissions": payload.permissions, "token_version": 0,
+           "status": "active", "created_at": now_iso()}
+    res = await db.users.insert_one(doc)
+    await audit(user, "create_user", "user", str(res.inserted_id), {"role": payload.role})
+    return {"id": str(res.inserted_id), "email": email, "role": payload.role}
+
+@api.get("/admin/users")
+async def admin_list_users(user=Depends(require_role("admin"))):
+    docs = await db.users.find({"role": {"$in": ["admin", "agency"]}}).sort("created_at", -1).to_list(500)
+    return serialize_list(docs)
+
+class PermsPatch(BaseModel):
+    permissions: List[str]
+    role: Optional[str] = Field(default=None, pattern="^(agency|admin|advertiser|driver)$")
+
+@api.patch("/admin/users/{uid}/permissions")
+async def update_perms(uid: str, payload: PermsPatch, user=Depends(require_role("admin"))):
+    updates = {"permissions": payload.permissions}
+    if payload.role: updates["role"] = payload.role
+    await db.users.update_one({"_id": oid(uid)}, {"$set": updates})
+    return serialize(await db.users.find_one({"_id": oid(uid)}))
+
+# ---------- API keys / external platform ----------
+import secrets as _sec
+
+class ApiKeyIn(BaseModel):
+    name: str
+    scopes: List[str] = ["read:campaigns", "read:analytics"]
+
+@api.post("/admin/api-keys")
+async def create_api_key(payload: ApiKeyIn, user=Depends(require_role("admin"))):
+    raw = "owm_" + _sec.token_urlsafe(28)
+    khash = hashlib.sha256(raw.encode()).hexdigest()
+    await db.api_keys.insert_one({"name": payload.name, "scopes": payload.scopes, "key_hash": khash,
+                                    "prefix": raw[:12], "created_by": user["email"], "created_at": now_iso(), "revoked": False, "last_used": None})
+    return {"api_key": raw, "prefix": raw[:12], "message": "Store this key securely — it will not be shown again."}
+
+@api.get("/admin/api-keys")
+async def list_api_keys(user=Depends(require_role("admin"))):
+    docs = await db.api_keys.find({"revoked": False}).sort("created_at", -1).to_list(200)
+    for d in docs:
+        d.pop("key_hash", None)
+    return serialize_list(docs)
+
+@api.delete("/admin/api-keys/{kid}")
+async def revoke_api_key(kid: str, user=Depends(require_role("admin"))):
+    await db.api_keys.update_one({"_id": oid(kid)}, {"$set": {"revoked": True, "revoked_at": now_iso()}})
+    return {"ok": True}
+
+async def verify_api_key(request: Request, required_scope: str):
+    key = request.headers.get("X-API-Key", "")
+    if not key:
+        raise HTTPException(401, "Missing X-API-Key")
+    khash = hashlib.sha256(key.encode()).hexdigest()
+    rec = await db.api_keys.find_one({"key_hash": khash, "revoked": False})
+    if not rec:
+        raise HTTPException(401, "Invalid API key")
+    if required_scope not in rec.get("scopes", []):
+        raise HTTPException(403, f"Missing scope: {required_scope}")
+    await db.api_keys.update_one({"_id": rec["_id"]}, {"$set": {"last_used": now_iso()}})
+    return rec
+
+# External API endpoints (v1)
+@api.get("/external/v1/campaigns")
+async def ext_campaigns(request: Request):
+    await verify_api_key(request, "read:campaigns")
+    docs = await db.campaigns.find().limit(500).to_list(500)
+    return {"data": serialize_list(docs)}
+
+@api.get("/external/v1/analytics/summary")
+async def ext_analytics(request: Request):
+    await verify_api_key(request, "read:analytics")
+    return {
+        "plays": await db.playback_events.count_documents({}),
+        "devices_online": await db.devices.count_documents({"status": "Online"}),
+        "campaigns_active": await db.campaigns.count_documents({"status": "Active"}),
+        "audience_samples": await db.audience_samples.count_documents({}),
+    }
+
+# ---------- BI / executive dashboard ----------
+@api.get("/admin/bi/summary")
+async def bi_summary(user=Depends(require_role("admin"))):
+    now = datetime.now(timezone.utc)
+    online_cutoff = (now - timedelta(minutes=5)).isoformat()
+    day_iso = now.date().isoformat()
+    month_iso = now.replace(day=1).date().isoformat()
+    paid_q = {"payment_status": "paid"}
+    day_rev = await db.payment_transactions.aggregate([{"$match": {**paid_q, "updated_at": {"$gte": day_iso}}}, {"$group": {"_id": None, "s": {"$sum": "$amount"}}}]).to_list(1)
+    month_rev = await db.payment_transactions.aggregate([{"$match": {**paid_q, "updated_at": {"$gte": month_iso}}}, {"$group": {"_id": None, "s": {"$sum": "$amount"}}}]).to_list(1)
+    pending = await db.invoices.aggregate([{"$match": {"status": "Pending"}}, {"$group": {"_id": None, "s": {"$sum": "$amount"}}}]).to_list(1)
+    # Top campaigns
+    top_campaigns_agg = await db.playback_events.aggregate([{"$group": {"_id": "$campaign_id", "plays": {"$sum": 1}}}, {"$sort": {"plays": -1}}, {"$limit": 5}]).to_list(5)
+    top_camps = []
+    for row in top_campaigns_agg:
+        if not row["_id"]: continue
+        c = await db.campaigns.find_one({"_id": oid(row["_id"])})
+        if c: top_camps.append({"id": row["_id"], "name": c["name"], "plays": row["plays"]})
+    # Top devices
+    top_devs_agg = await db.playback_events.aggregate([{"$group": {"_id": "$device_id", "plays": {"$sum": 1}}}, {"$sort": {"plays": -1}}, {"$limit": 5}]).to_list(5)
+    top_devs = []
+    for row in top_devs_agg:
+        if not row["_id"]: continue
+        d = await db.devices.find_one({"_id": oid(row["_id"])})
+        if d: top_devs.append({"id": row["_id"], "device_code": d.get("device_code"), "plays": row["plays"]})
+    return {
+        "network": {
+            "cities": await db.cities.count_documents({}),
+            "devices_total": await db.devices.count_documents({}),
+            "devices_online": await db.devices.count_documents({"last_online": {"$gte": online_cutoff}}),
+            "devices_offline": await db.devices.count_documents({"last_online": {"$lt": online_cutoff}}),
+            "vehicles": await db.vehicles.count_documents({}),
+        },
+        "advertising": {
+            "campaigns_active": await db.campaigns.count_documents({"status": "Active"}),
+            "ads_total": await db.ads.count_documents({}),
+            "plays": await db.playback_events.count_documents({}),
+            "estimated_audience": (await db.audience_samples.aggregate([{"$group": {"_id": None, "s": {"$sum": "$viewers"}}}]).to_list(1) or [{}])[0].get("s", 0),
+        },
+        "revenue": {
+            "today": day_rev[0]["s"] if day_rev else 0,
+            "month": month_rev[0]["s"] if month_rev else 0,
+            "pending": pending[0]["s"] if pending else 0,
+        },
+        "top_campaigns": top_camps,
+        "top_devices": top_devs,
+        "alerts_open": await db.alerts.count_documents({"resolved": False}),
+    }
+
+@api.get("/admin/bi/heatmap")
+async def bi_heatmap(user=Depends(require_role("admin"))):
+    """City-level device + play counts for map view."""
+    cities = await db.cities.find().to_list(200)
+    out = []
+    for c in cities:
+        # vehicles in this city -> devices -> plays
+        vehicles = await db.vehicles.find({"operating_area": {"$regex": c["name"], "$options": "i"}}).to_list(500)
+        v_ids = [str(v["_id"]) for v in vehicles]
+        devices_n = await db.devices.count_documents({"vehicle_id": {"$in": v_ids}}) if v_ids else 0
+        plays_n = 0
+        if v_ids:
+            d_ids = [str(x["_id"]) async for x in db.devices.find({"vehicle_id": {"$in": v_ids}})]
+            plays_n = await db.playback_events.count_documents({"device_id": {"$in": d_ids}}) if d_ids else 0
+        out.append({"city": c["name"], "state": c.get("state", ""), "lat": c.get("lat", 0), "lng": c.get("lng", 0), "devices": devices_n, "plays": plays_n})
+    return out
+
+# ---------- extend campaign targeting for cities ----------
+class CampaignAreasIn(BaseModel):
+    target_cities: List[str] = []
+    target_groups: List[str] = []
+
+@api.patch("/campaigns/{cid}/areas")
+async def update_campaign_areas(cid: str, payload: CampaignAreasIn, user=Depends(require_role("advertiser"))):
+    c = await db.campaigns.find_one({"_id": oid(cid), "advertiser_id": user["id"]})
+    if not c: raise HTTPException(404, "Not found")
+    await db.campaigns.update_one({"_id": oid(cid)}, {"$set": payload.model_dump()})
+    return serialize(await db.campaigns.find_one({"_id": oid(cid)}))
+
+# ---------- extended reports ----------
+@api.get("/admin/reports/export")
+async def export_report_v2(kind: str = "campaigns", fmt: str = "csv", days: int = 30, user=Depends(require_role("admin"))):
+    """Overrides the phase-2 export with additional kinds: drivers, network, revenue."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    if kind == "drivers":
+        rows = await db.drivers.find().to_list(1000)
+        headers = ["full_name", "email", "phone", "city", "state", "vehicle_reg_no", "status", "created_at"]
+        data = [[r.get(h, "") for h in headers] for r in rows]
+    elif kind == "network":
+        # per device rollup
+        rows = await db.devices.find().to_list(2000)
+        headers = ["device_code", "status", "last_online", "app_version"]
+        # Add plays_count per device
+        data = []
+        for r in rows:
+            plays = await db.playback_events.count_documents({"device_id": str(r["_id"])})
+            data.append([r.get("device_code",""), r.get("status",""), r.get("last_online",""), r.get("app_version",""), plays])
+        headers.append("plays")
+    elif kind == "revenue":
+        rows = await db.payment_transactions.find({"payment_status": "paid"}).to_list(2000)
+        headers = ["session_id", "user_id", "amount", "currency", "updated_at"]
+        data = [[r.get(h, "") for h in headers] for r in rows]
+    elif kind == "campaigns":
+        rows = await db.campaigns.find().to_list(1000)
+        headers = ["name", "advertiser_id", "start_date", "end_date", "status", "budget", "objective"]
+        data = [[r.get(h, "") for h in headers] for r in rows]
+    elif kind == "devices":
+        rows = await db.devices.find().to_list(2000)
+        headers = ["device_code", "status", "last_online", "app_version", "network"]
+        data = [[r.get(h, "") for h in headers] for r in rows]
+    elif kind == "audience":
+        rows = await db.audience_samples.find({"at": {"$gte": since}}).to_list(5000)
+        headers = ["at", "device_code", "viewers", "attention_score", "age_distribution", "gender_distribution"]
+        data = [[r.get(h, "") if h not in ("age_distribution","gender_distribution") else str(r.get(h, {})) for h in headers] for r in rows]
+    elif kind == "engagement":
+        rows = await db.game_sessions.find({"started_at": {"$gte": since}}).to_list(5000)
+        headers = ["session_id", "game_id", "campaign_id", "device_id", "started_at", "completed_at", "score", "status"]
+        data = [[r.get(h, "") for h in headers] for r in rows]
+    else:
+        raise HTTPException(400, "Unknown report kind")
+
+    if fmt == "csv":
+        buf = io.StringIO(); w = csv.writer(buf); w.writerow(headers); w.writerows(data); buf.seek(0)
+        return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{kind}_{days}d.csv"'})
+    elif fmt == "pdf":
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib import colors
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=32, bottomMargin=24)
+        styles = getSampleStyleSheet()
+        story = [Paragraph(f"On Wheels Media — {kind.title()} Report ({days} days)", styles["Title"]), Spacer(1, 12)]
+        t = Table([headers] + [[str(x)[:60] for x in row] for row in data[:500]], repeatRows=1)
+        t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#facc15")),("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),0.25,colors.grey)]))
+        story.append(t); doc.build(story); buf.seek(0)
+        return StreamingResponse(iter([buf.getvalue()]), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{kind}_{days}d.pdf"'})
+    else:
+        raise HTTPException(400, "fmt must be csv or pdf")
 
 app.include_router(api)
 
