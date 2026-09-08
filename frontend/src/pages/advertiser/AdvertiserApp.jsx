@@ -282,9 +282,18 @@ function Payments() {
       <div className="border border-zinc-800">
         {rows.map(i => (
           <div key={i.id} className="p-4 border-b border-zinc-800 last:border-0 flex justify-between hover:bg-zinc-900">
-            <div className="font-mono text-xs">{i.id}</div>
-            <div className="font-medium">${i.amount}</div>
-            <div><span className={`px-2 py-1 rounded text-xs ${i.status==="Paid"?"bg-green-500/20 text-green-400":"bg-yellow-500/20 text-yellow-400"}`}>{i.status}</span></div>
+            <div className="font-mono text-xs">{i.session_id || i.id}</div>
+            <div className="font-medium">{formatINR(i.amount)}</div>
+            <div className="flex items-center gap-3">
+              <span className={`px-2 py-1 rounded text-xs ${i.status==="Paid"?"bg-green-500/20 text-green-400":"bg-yellow-500/20 text-yellow-400"}`}>{i.status}</span>
+              {i.session_id && <button data-testid={`inv-pdf-${i.id}`} onClick={async ()=>{
+                const token = localStorage.getItem("owm_token");
+                const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/invoices/${i.session_id}/pdf`, { headers: { Authorization: `Bearer ${token}` } });
+                if (!r.ok) return;
+                const blob = await r.blob(); const a = document.createElement("a"); const u = URL.createObjectURL(blob);
+                a.href = u; a.download = `invoice-${i.session_id.slice(-6)}.pdf`; a.click(); URL.revokeObjectURL(u);
+              }} className="text-xs px-2 py-1 border border-zinc-700 hover:border-yellow-400 rounded">PDF</button>}
+            </div>
           </div>
         ))}
         {rows.length===0 && <div className="p-12 text-center text-zinc-500">No invoices yet.</div>}

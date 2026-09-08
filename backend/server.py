@@ -2443,6 +2443,176 @@ async def get_invoice(session_id: str, user=Depends(get_current_user)):
     return {"transaction": serialize(tx), "campaign": campaign, "invoice_number": f"OWM-{tx['created_at'][:10].replace('-','')}-{session_id[-6:].upper()}"}
 
 
+class InvoiceMetaIn(BaseModel):
+    gstin: Optional[str] = ""
+    hsn_code: str = "998365"  # HSN for advertising services (India)
+    company_address: str = "On Wheels Media, Bengaluru, KA, India"
+    company_name: str = "On Wheels Media"
+
+@api.get("/admin/invoice-meta")
+async def get_invoice_meta(user=Depends(require_role("admin"))):
+    cfg = await db.invoice_meta.find_one({"_id": "singleton"})
+    if not cfg:
+        d = InvoiceMetaIn().model_dump(); d["_id"] = "singleton"
+        await db.invoice_meta.insert_one(d)
+        cfg = d
+    cfg.pop("_id", None)
+    return cfg
+
+@api.patch("/admin/invoice-meta")
+async def set_invoice_meta(payload: InvoiceMetaIn, user=Depends(require_role("admin"))):
+    doc = payload.model_dump()
+    await db.invoice_meta.update_one({"_id": "singleton"}, {"$set": doc}, upsert=True)
+    return doc
+
+
+def _fmt_inr_py(x: float) -> str:
+    """Indian-style number formatting: 1,00,000."""
+    try:
+        n = float(x)
+    except Exception:
+        return "₹0"
+    negative = n < 0
+    abs_n = abs(n)
+    whole, decimal = f"{abs_n:.2f}".split(".")
+    last3 = whole[-3:]
+    other = whole[:-3]
+    import re as _re
+    if other:
+        other = _re.sub(r"\B(?=(\d{2})+(?!\d))", ",", other) + ","
+    dec = f".{decimal}" if decimal != "00" else ""
+    return f"{'-' if negative else ''}₹{other}{last3}{dec}"
+
+
+@api.get("/invoices/{session_id}/pdf")
+async def download_invoice_pdf(session_id: str, request: Request):
+    """Advertiser or admin can download the branded PDF. Auth via Bearer or session cookie."""
+    user = await get_current_user(request)
+    tx = await db.payment_transactions.find_one({"session_id": session_id})
+    if not tx: raise HTTPException(404, "Invoice not found")
+    if user["role"] != "admin" and tx.get("user_id") != user["id"]:
+        raise HTTPException(403, "Not your invoice")
+
+    campaign = None
+    if tx.get("campaign_id"):
+        campaign = await db.campaigns.find_one({"_id": oid(tx["campaign_id"])})
+    adv = await db.users.find_one({"_id": oid(tx["user_id"])}) if tx.get("user_id") else {}
+    meta = await db.invoice_meta.find_one({"_id": "singleton"}) or InvoiceMetaIn().model_dump()
+    snapshot = (tx.get("snapshot") or (campaign.get("pricing_snapshot") if campaign else {}) or {})
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=18*mm, bottomMargin=18*mm)
+    styles = getSampleStyleSheet()
+    title = ParagraphStyle("t", parent=styles["Title"], textColor=colors.HexColor("#facc15"), alignment=2, fontSize=22, spaceAfter=4)
+    small = ParagraphStyle("s", parent=styles["Normal"], fontSize=9, textColor=colors.grey)
+    header = ParagraphStyle("h", parent=styles["Heading3"], textColor=colors.HexColor("#18181b"))
+    body = styles["Normal"]
+
+    invoice_number = f"OWM-{tx['created_at'][:10].replace('-','')}-{session_id[-6:].upper()}"
+    story = []
+
+    # Header
+    header_data = [
+        [
+            Paragraph(f"<b>{meta.get('company_name','On Wheels Media')}</b><br/><font size=9 color='#71717a'>{meta.get('company_address','')}<br/>GSTIN: {meta.get('gstin','—')}</font>", body),
+            Paragraph(f"<font color='#facc15' size=20><b>INVOICE</b></font><br/><font size=9>#{invoice_number}</font><br/><font size=9 color='#71717a'>{tx.get('created_at','')[:10]}</font>", ParagraphStyle('hr', parent=body, alignment=2)),
+        ]
+    ]
+    story.append(Table(header_data, colWidths=[95*mm, 85*mm], style=TableStyle([("VALIGN",(0,0),(-1,-1),"TOP")])))
+    story.append(Spacer(1, 8*mm))
+
+    # Bill to
+    story.append(Paragraph("<b>Bill To</b>", header))
+    story.append(Paragraph(f"{adv.get('name','') if adv else ''}<br/>{adv.get('company','') if adv else ''}<br/>{adv.get('email','') if adv else ''}<br/>{adv.get('phone','') if adv else ''}", body))
+    story.append(Spacer(1, 6*mm))
+
+    # Campaign details
+    if campaign:
+        story.append(Paragraph("<b>Campaign details</b>", header))
+        details = [
+            ["Campaign name", campaign.get("name","")],
+            ["Number of autos", str(snapshot.get("autos","—"))],
+            ["Cities", ", ".join(campaign.get("target_cities") or campaign.get("target_locations") or []) or "—"],
+            ["Duration", f"{snapshot.get('duration_days','—')} days ({campaign.get('start_date','')} → {campaign.get('end_date','')})"],
+            ["Estimated impressions", f"{snapshot.get('estimated_impressions',0):,}"],
+            ["Pricing model", snapshot.get("pricing_model","—")],
+        ]
+        t = Table(details, colWidths=[55*mm, 125*mm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(0,-1),colors.HexColor("#f4f4f5")),
+            ("TEXTCOLOR",(0,0),(0,-1),colors.HexColor("#71717a")),
+            ("FONTSIZE",(0,0),(-1,-1),9),
+            ("BOX",(0,0),(-1,-1),0.25,colors.grey),
+            ("GRID",(0,0),(-1,-1),0.25,colors.HexColor("#e4e4e7")),
+            ("VALIGN",(0,0),(-1,-1),"TOP"),
+            ("PADDING",(0,0),(-1,-1),6),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 6*mm))
+
+    # Amount breakdown (HSN + INR)
+    subtotal = float(snapshot.get("subtotal", tx.get("amount", 0)))
+    discount = float(snapshot.get("discount", 0))
+    gst_pct = float(snapshot.get("gst_percentage", 0))
+    gst_amount = float(snapshot.get("gst_amount", 0))
+    total = float(tx.get("amount", 0))
+
+    line_items = [
+        ["#", "Description", "HSN", "Amount"],
+        ["1", f"{campaign.get('name','Advertising campaign') if campaign else 'Advertising campaign'}", meta.get("hsn_code","998365"), _fmt_inr_py(subtotal)],
+    ]
+    t2 = Table(line_items, colWidths=[10*mm, 100*mm, 30*mm, 40*mm])
+    t2.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#facc15")),
+        ("TEXTCOLOR",(0,0),(-1,0),colors.HexColor("#18181b")),
+        ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
+        ("FONTSIZE",(0,0),(-1,-1),9),
+        ("ALIGN",(-1,0),(-1,-1),"RIGHT"),
+        ("BOX",(0,0),(-1,-1),0.5,colors.grey),
+        ("GRID",(0,0),(-1,-1),0.25,colors.HexColor("#e4e4e7")),
+        ("PADDING",(0,0),(-1,-1),6),
+    ]))
+    story.append(t2)
+    story.append(Spacer(1, 4*mm))
+
+    # Totals
+    totals_rows = [
+        ["Subtotal", _fmt_inr_py(subtotal)],
+    ]
+    if discount > 0:
+        totals_rows.append([f"Discount", f"-{_fmt_inr_py(discount)}"])
+    if gst_amount > 0:
+        totals_rows.append([f"GST ({gst_pct}%)", _fmt_inr_py(gst_amount)])
+    totals_rows.append(["Total Paid (INR)", _fmt_inr_py(total)])
+    t3 = Table(totals_rows, colWidths=[140*mm, 40*mm])
+    t3.setStyle(TableStyle([
+        ("FONTSIZE",(0,0),(-1,-1),10),
+        ("ALIGN",(-1,0),(-1,-1),"RIGHT"),
+        ("LINEABOVE",(0,-1),(-1,-1),1,colors.HexColor("#18181b")),
+        ("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),
+        ("BACKGROUND",(0,-1),(-1,-1),colors.HexColor("#facc15")),
+        ("PADDING",(0,0),(-1,-1),5),
+    ]))
+    story.append(t3)
+    story.append(Spacer(1, 8*mm))
+
+    # Payment info
+    story.append(Paragraph(f"<font size=9 color='#71717a'>Payment status: <b>{tx.get('payment_status','—').upper()}</b> · Stripe session: {session_id}</font>", body))
+    story.append(Spacer(1, 4*mm))
+    story.append(Paragraph("<font size=8 color='#a1a1aa'>Thank you for advertising with On Wheels Media. This is a computer-generated invoice and does not require a signature.</font>", small))
+
+    doc.build(story)
+    buf.seek(0)
+    return StreamingResponse(iter([buf.getvalue()]), media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{invoice_number}.pdf"'})
+
+
 app.include_router(api)
 
 app.add_middleware(

@@ -1,0 +1,27 @@
+{
+  "summary": "Validated NEW invoice PDF + invoice-meta endpoints and full regression. Added 11 new tests in test_owm_phase5_invoice_pdf.py covering: (a) GET/PATCH /api/admin/invoice-meta with defaults + admin gating, (b) /api/pricing/purchase + direct Mongo mark-paid to synthesize a paid tx (skips real Stripe redirect), (c) GET /api/invoices/{sid}/pdf auth matrix — owner 200, admin 200, other-advertiser 403, unknown 404, unauth 401, (d) PDF integrity — application/pdf content-type, %PDF- magic bytes, size > 1500 bytes, Content-Disposition attachment filename contains 'OWM-'. Full suite: 119/119 pass (108 prior + 11 new).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_owm_phase5_invoice_pdf.py",
+    "/app/test_reports/pytest/iter7_full.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 2625 lines — growing steadily. Pricing engine, invoice/PDF, admin plans, audience, alerts should each be extracted to /app/backend/routers/*.py before adding more features.",
+    "download_invoice_pdf builds the PDF entirely inside the request handler with reportlab (~120 lines inline). Consider moving to /app/backend/services/invoice_pdf.py for testability and to keep the FastAPI handler thin.",
+    "CORS still allow_origins=['*'] with allow_credentials=True — same latent bug flagged in iter6, will bite when any cookie-auth endpoint is added.",
+    "InvoiceMetaIn stores the singleton with a synthetic _id='singleton'. serialize()-style handling in GET pops _id but returns raw dict — fine, but the pattern is fragile if this doc is ever read elsewhere. Consider a fixed collection with a UUID or dedicated config table.",
+    "invoice_number derivation `f\"OWM-{tx['created_at'][:10].replace('-','')}-{session_id[-6:].upper()}\"` — session_id last-6 chars is not guaranteed unique across days; use a stored invoice_number field on the tx doc to make invoices immutable/searchable."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_owm_phase5_invoice_pdf.py (new)"
+  ],
+  "success_rate": {"backend": "100% (119/119)", "frontend": "not tested (backend-only scope)"},
+  "test_credentials": "Admin: admin@onwheelsmedia.com / Admin@12345 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Phase-5 tests register 2 TEST_ prefixed advertisers, create 1 campaign + payment_transactions row, mark it paid via direct motor update, then delete the tx and campaign in test_p5_99_cleanup. Invoice-meta singleton is left populated (idempotent, admin can re-PATCH).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "119 backend tests pass. Phase-5 covers invoice PDF + invoice-meta. Reproduce all: `python -m pytest backend/tests/ -v`. Note: /admin/invoice-meta PATCH persists globally so first assertion in test_p5_01 tolerates prior state — it only asserts key presence, then test_p5_02 asserts round-trip. To test PDF without real Stripe, motor is used directly to flip payment_status='paid'.",
+  "rca of the issue": "N/A — no regressions. Initial test authored used /api/pricing/plans path which does not exist (actual endpoint is /api/admin/plans); fixed in test file, not app code."
+}

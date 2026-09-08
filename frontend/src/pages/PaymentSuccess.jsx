@@ -1,7 +1,16 @@
 import { useEffect, useState, useCallback } from "react";
 import { useSearchParams, Link, useNavigate } from "react-router-dom";
-import api from "@/lib/api";
+import api, { API } from "@/lib/api";
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
+
+async function downloadInvoice(sessionId) {
+  const token = localStorage.getItem("owm_token");
+  const r = await fetch(`${API}/invoices/${sessionId}/pdf`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) return;
+  const blob = await r.blob();
+  const a = document.createElement("a"); const u = URL.createObjectURL(blob);
+  a.href = u; a.download = `invoice-${sessionId.slice(-6)}.pdf`; a.click(); URL.revokeObjectURL(u);
+}
 
 export default function PaymentSuccess() {
   const [sp] = useSearchParams();
@@ -42,8 +51,11 @@ export default function PaymentSuccess() {
           <div data-testid="payment-paid">
             <CheckCircle2 className="w-16 h-16 text-green-400 mx-auto" />
             <div className="mt-6 font-display text-3xl font-bold text-green-400">Payment received</div>
-            <div className="text-sm text-zinc-400 mt-2">${state.data?.amount} · session {sessionId?.slice(0, 12)}…</div>
-            <button data-testid="back-dashboard" onClick={() => nav("/advertiser/payments")} className="mt-8 bg-yellow-400 hover:bg-yellow-300 text-zinc-950 px-6 py-3 rounded font-semibold">Back to dashboard</button>
+            <div className="text-sm text-zinc-400 mt-2">₹{state.data?.amount} · session {sessionId?.slice(0, 12)}…</div>
+            <div className="mt-8 flex gap-3 justify-center">
+              <button data-testid="download-invoice" onClick={() => downloadInvoice(sessionId)} className="border border-zinc-700 hover:border-yellow-400 text-white px-5 py-3 rounded font-medium">Download Invoice PDF</button>
+              <button data-testid="back-dashboard" onClick={() => nav("/advertiser/payments")} className="bg-yellow-400 hover:bg-yellow-300 text-zinc-950 px-6 py-3 rounded font-semibold">Back to dashboard</button>
+            </div>
           </div>
         )}
         {(state.status === "failed" || state.status === "timeout" || state.status === "error") && (

@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
-import { ArrowRight, Radio, Zap, MapPin, ShieldCheck, Cpu, LineChart } from "lucide-react";
+import { ArrowRight, Radio } from "lucide-react";
+import { HERO_STATS, FEATURES, StatCard, FeatureCard } from "@/pages/landing/parts";
 
 export default function Landing() {
   return (
@@ -48,17 +49,7 @@ export default function Landing() {
 
           {/* Stats bento */}
           <div className="mt-24 grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[
-              { k: "10M+", v: "Monthly impressions" },
-              { k: "500+", v: "Autos in network" },
-              { k: "24/7", v: "Live monitoring" },
-              { k: "<3s", v: "Sync latency" },
-            ].map((s, i) => (
-              <div key={i} className="border border-zinc-800 p-6 hover:border-yellow-400/40 transition-colors">
-                <div className="font-display text-3xl md:text-4xl font-bold text-yellow-400">{s.k}</div>
-                <div className="text-xs text-zinc-500 uppercase tracking-widest mt-2">{s.v}</div>
-              </div>
-            ))}
+            {HERO_STATS.map((s) => <StatCard key={s.v} stat={s} />)}
           </div>
         </div>
       </section>
@@ -66,20 +57,7 @@ export default function Landing() {
       {/* Features */}
       <section className="max-w-7xl mx-auto px-6 py-24 border-t border-zinc-800">
         <div className="grid md:grid-cols-3 gap-px bg-zinc-800">
-          {[
-            { i: Zap, t: "Instant campaign launch", d: "Approved ads reach devices within seconds via our cloud sync." },
-            { i: MapPin, t: "Geo-targeted delivery", d: "Target autos by operating area, route, and time-of-day." },
-            { i: LineChart, t: "Live playback proof", d: "Every play, every scan — recorded, aggregated, exported." },
-            { i: Cpu, t: "Offline-first player", d: "Cached content keeps playing even without cellular signal." },
-            { i: ShieldCheck, t: "Admin approvals", d: "Every ad reviewed. Every driver verified. Brand-safe by default." },
-            { i: Radio, t: "QR + News + Weather", d: "Rich content layers between ads keep passengers engaged." },
-          ].map((f, i) => (
-            <div key={i} className="bg-zinc-950 p-8 hover:bg-zinc-900 transition-colors">
-              <f.i className="w-6 h-6 text-yellow-400 mb-4" />
-              <h3 className="font-display text-xl font-semibold mb-2">{f.t}</h3>
-              <p className="text-sm text-zinc-400">{f.d}</p>
-            </div>
-          ))}
+          {FEATURES.map((f) => <FeatureCard key={f.key} f={f} />)}
         </div>
       </section>
 
