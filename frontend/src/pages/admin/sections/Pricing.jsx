@@ -5,7 +5,7 @@ export default function Pricing() {
   const [rows, setRows] = useState([]);
   const [form, setForm] = useState({ name: "", kind: "base", unit: "per_day_per_device", amount: 100, currency: "usd", active: true });
   const load = () => api.get("/admin/pricing").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const create = async () => {
     try { await api.post("/admin/pricing", { ...form, conditions: {} }); toast.success("Rule created"); load(); }
     catch { toast.error("Failed"); }

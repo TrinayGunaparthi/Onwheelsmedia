@@ -4,7 +4,7 @@ import { toast } from "sonner";
 export default function Earnings() {
   const [data, setData] = useState({ drivers: [] });
   const load = () => api.get("/admin/earnings").then(r => setData(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const payout = async (driver_id, amount) => {
     const amt = parseFloat(prompt(`Payout amount ($) for driver ${driver_id.slice(0,6)}…`, amount)) || 0;
     if (!amt) return;

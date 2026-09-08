@@ -5,7 +5,7 @@ export default function WeatherPage() {
   const [rows, setRows] = useState([]);
   const [location, setLocation] = useState("");
   const load = () => api.get("/admin/weather").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const create = async () => {
     if (!location) return;
     try { await api.post("/admin/weather", { location, device_ids: [], frequency: 4, duration_seconds: 8 }); toast.success("Added"); setLocation(""); load(); }

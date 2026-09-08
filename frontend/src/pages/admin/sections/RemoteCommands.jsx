@@ -18,7 +18,7 @@ export default function RemoteCommands() {
   const [devices, setDevices] = useState([]);
   const [selected, setSelected] = useState([]);
   const load = () => api.get("/admin/devices").then(r => setDevices(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const toggle = (id) => setSelected(selected.includes(id) ? selected.filter(x=>x!==id) : [...selected, id]);
   const toggleAll = () => setSelected(selected.length===devices.length ? [] : devices.map(d=>d.id));
   const runBulk = async (action) => {

@@ -8,7 +8,7 @@ export default function UsersAndRoles() {
   const [rows, setRows] = useState([]);
   const [form, setForm] = useState({ email: "", password: "", name: "", role: "admin", permissions: ["all"] });
   const load = () => api.get("/admin/users").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const create = async () => {
     try { await api.post("/admin/users", form); toast.success("User created"); setForm({email:"",password:"",name:"",role:"admin",permissions:["all"]}); load(); }
     catch (e) { toast.error(e.response?.data?.detail || "Failed"); }

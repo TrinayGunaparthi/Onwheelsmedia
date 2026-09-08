@@ -29,7 +29,7 @@ function Advertisers() {
   const [rows, setRows] = useState([]);
   const [advId, setAdvId] = useState("");
   const load = () => api.get("/agency/advertisers").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const link = async () => {
     try { await api.post("/agency/link", { advertiser_id: advId }); toast.success("Linked"); setAdvId(""); load(); }
     catch (e) { toast.error(e.response?.data?.detail || "Failed"); }

@@ -7,7 +7,7 @@ const STATUSES = ["Submitted", "Under Review", "Approved", "Rejected", "Schedule
 export default function AdsPage() {
   const [rows, setRows] = useState([]);
   const load = () => api.get("/admin/ads").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const setStatus = async (id, status) => {
     try { await api.patch(`/admin/ads/${id}`, { status }); toast.success(status); load(); }
     catch { toast.error("Update failed"); }

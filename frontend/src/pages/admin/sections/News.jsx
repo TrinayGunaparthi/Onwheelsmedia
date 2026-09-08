@@ -5,7 +5,7 @@ export default function NewsPage() {
   const [rows, setRows] = useState([]);
   const [form, setForm] = useState({ headline: "", description: "", location: "", duration_seconds: 10, active: true });
   const load = () => api.get("/admin/news").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const create = async () => {
     try { await api.post("/admin/news", form); toast.success("Published"); setForm({ headline: "", description: "", location: "", duration_seconds: 10, active: true }); load(); }
     catch { toast.error("Failed"); }

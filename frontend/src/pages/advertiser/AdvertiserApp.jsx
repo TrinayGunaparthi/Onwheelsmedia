@@ -43,7 +43,7 @@ function MyAds() {
   const [form, setForm] = useState({ name: "", description: "", duration_seconds: 15, file_url: "", file_type: "", file_path: "" });
   const [uploading, setUploading] = useState(false);
   const load = () => api.get("/ads").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const upload = async (e) => {
     const f = e.target.files[0]; if (!f) return;
     setUploading(true);

@@ -9,7 +9,7 @@ export default function DriversPage() {
   const [search, setSearch] = useState("");
   const [openDocs, setOpenDocs] = useState(null);
   const load = () => api.get("/admin/drivers").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const setStatus = async (id, status) => {
     try { await api.patch(`/admin/drivers/${id}`, { status }); toast.success(`Marked ${status}`); load(); }
     catch (e) { toast.error("Update failed"); }

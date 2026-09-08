@@ -7,7 +7,7 @@ export default function ApiKeys() {
   const [scopes, setScopes] = useState(["read:campaigns","read:analytics"]);
   const [newKey, setNewKey] = useState(null);
   const load = () => api.get("/admin/api-keys").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const create = async () => {
     try {
       const { data } = await api.post("/admin/api-keys", { name, scopes });

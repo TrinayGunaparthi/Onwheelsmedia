@@ -5,7 +5,7 @@ export default function Cities() {
   const [rows, setRows] = useState([]);
   const [form, setForm] = useState({ name: "", state: "", lat: 0, lng: 0 });
   const load = () => api.get("/admin/cities").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const create = async () => { try { await api.post("/admin/cities", form); toast.success("Added"); setForm({name:"",state:"",lat:0,lng:0}); load(); } catch { toast.error("Failed"); } };
   const del = async (id) => { await api.delete(`/admin/cities/${id}`); load(); };
   return (

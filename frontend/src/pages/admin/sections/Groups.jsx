@@ -5,7 +5,7 @@ export default function Groups() {
   const [rows, setRows] = useState([]);
   const [form, setForm] = useState({ name: "", kind: "device", description: "" });
   const load = () => api.get("/admin/groups").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const create = async () => {
     try { await api.post("/admin/groups", { ...form, member_ids: [] }); toast.success("Group created"); setForm({name:"",kind:"device",description:""}); load(); }
     catch { toast.error("Failed"); }

@@ -5,7 +5,7 @@ export default function QrPage() {
   const [rows, setRows] = useState([]);
   const [form, setForm] = useState({ name: "", target_url: "", campaign_type: "Website" });
   const load = () => api.get("/admin/qr").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const create = async () => {
     try { await api.post("/admin/qr", { ...form, device_ids: [] }); setForm({ name: "", target_url: "", campaign_type: "Website" }); toast.success("Created"); load(); }
     catch { toast.error("Failed"); }

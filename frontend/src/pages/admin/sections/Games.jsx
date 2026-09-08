@@ -10,7 +10,7 @@ export default function Games() {
   const [questions, setQuestions] = useState([{ question: "", options: ["", "", "", ""], correct: 0 }]);
   const [segments, setSegments] = useState([{ label: "10% OFF" }, { label: "Try Again" }, { label: "Free Coffee" }, { label: "Better Luck" }]);
   const load = () => api.get("/admin/games").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const create = async () => {
     const config = type === "quiz" ? { questions } : { segments };
     try { await api.post("/admin/games", { name, game_type: type, config, active: true }); toast.success("Game created"); setName(""); load(); }

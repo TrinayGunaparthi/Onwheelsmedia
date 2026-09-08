@@ -5,7 +5,7 @@ export default function PlaylistsPage() {
   const [rows, setRows] = useState([]);
   const [name, setName] = useState("");
   const load = () => api.get("/admin/playlists").then(r => setRows(r.data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const create = async () => {
     if (!name) return;
     try { await api.post("/admin/playlists", { name, device_ids: [], items: [] }); setName(""); toast.success("Created"); load(); } catch { toast.error("Failed"); }
