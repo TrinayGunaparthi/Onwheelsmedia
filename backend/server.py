@@ -1974,6 +1974,475 @@ async def export_report_v2(kind: str = "campaigns", fmt: str = "csv", days: int 
     else:
         raise HTTPException(400, "fmt must be csv or pdf")
 
+# ============================================================
+# PRICING & BILLING (INR) — Admin-controlled, campaign snapshot on purchase
+# ============================================================
+
+class PlanIn(BaseModel):
+    name: str
+    autos: int = Field(ge=1)
+    duration_days: int = Field(ge=1)
+    price_inr: float = Field(ge=0)
+    estimated_reach: Optional[int] = 0
+    features: List[str] = []
+    pricing_model: str = "per_campaign"  # per_auto|per_day|per_campaign|cpm|auto_duration|auto_impressions|custom_quote
+    is_custom: bool = False
+    active: bool = True
+    sort_order: int = 0
+
+async def log_price_change(user, entity: str, entity_id: str, old: Any, new: Any, reason: str = ""):
+    await db.pricing_history.insert_one({
+        "entity": entity, "entity_id": entity_id, "old": old, "new": new,
+        "changed_by": user.get("email"), "reason": reason, "at": now_iso()
+    })
+
+@api.get("/admin/plans")
+async def list_plans(user=Depends(require_role("admin"))):
+    docs = await db.plans.find().sort([("sort_order", 1), ("autos", 1)]).to_list(200)
+    return serialize_list(docs)
+
+@api.get("/plans/public")
+async def public_plans():
+    docs = await db.plans.find({"active": True}).sort([("sort_order", 1), ("autos", 1)]).to_list(200)
+    return serialize_list(docs)
+
+@api.post("/admin/plans")
+async def create_plan(payload: PlanIn, user=Depends(require_role("admin"))):
+    doc = {**payload.model_dump(), "created_at": now_iso(), "updated_at": now_iso()}
+    res = await db.plans.insert_one(doc)
+    await log_price_change(user, "plan_create", str(res.inserted_id), None, doc)
+    doc.pop("_id", None); doc["id"] = str(res.inserted_id)
+    return doc
+
+@api.patch("/admin/plans/{pid}")
+async def update_plan(pid: str, payload: PlanIn, user=Depends(require_role("admin"))):
+    old = await db.plans.find_one({"_id": oid(pid)})
+    if not old: raise HTTPException(404, "Plan not found")
+    updates = {**payload.model_dump(), "updated_at": now_iso()}
+    await db.plans.update_one({"_id": oid(pid)}, {"$set": updates})
+    await log_price_change(user, "plan_update", pid, {"price_inr": old.get("price_inr"), "autos": old.get("autos"), "duration_days": old.get("duration_days")}, {"price_inr": updates["price_inr"], "autos": updates["autos"], "duration_days": updates["duration_days"]})
+    doc = await db.plans.find_one({"_id": oid(pid)})
+    return serialize(doc)
+
+@api.post("/admin/plans/{pid}/duplicate")
+async def duplicate_plan(pid: str, user=Depends(require_role("admin"))):
+    orig = await db.plans.find_one({"_id": oid(pid)})
+    if not orig: raise HTTPException(404, "Not found")
+    orig.pop("_id", None)
+    orig["name"] = f"{orig.get('name','')} (copy)"
+    orig["active"] = False
+    orig["created_at"] = now_iso()
+    res = await db.plans.insert_one(orig)
+    doc = await db.plans.find_one({"_id": res.inserted_id})
+    return serialize(doc)
+
+@api.delete("/admin/plans/{pid}")
+async def delete_plan(pid: str, user=Depends(require_role("admin"))):
+    old = await db.plans.find_one({"_id": oid(pid)})
+    await db.plans.delete_one({"_id": oid(pid)})
+    if old:
+        await log_price_change(user, "plan_delete", pid, old, None)
+    return {"ok": True}
+
+# --- CPM tiers ---
+class CpmTierIn(BaseModel):
+    views: int = Field(ge=1)
+    price_inr: float = Field(ge=0)
+    active: bool = True
+    sort_order: int = 0
+
+@api.get("/admin/cpm-tiers")
+async def list_cpm(user=Depends(require_role("admin"))):
+    docs = await db.cpm_tiers.find().sort([("views", 1)]).to_list(200)
+    return serialize_list(docs)
+
+@api.get("/cpm-tiers/public")
+async def public_cpm():
+    docs = await db.cpm_tiers.find({"active": True}).sort([("views", 1)]).to_list(200)
+    return serialize_list(docs)
+
+@api.post("/admin/cpm-tiers")
+async def create_cpm(payload: CpmTierIn, user=Depends(require_role("admin"))):
+    doc = {**payload.model_dump(), "created_at": now_iso()}
+    res = await db.cpm_tiers.insert_one(doc)
+    await log_price_change(user, "cpm_create", str(res.inserted_id), None, doc)
+    doc.pop("_id", None); doc["id"] = str(res.inserted_id)
+    return doc
+
+@api.patch("/admin/cpm-tiers/{tid}")
+async def update_cpm(tid: str, payload: CpmTierIn, user=Depends(require_role("admin"))):
+    old = await db.cpm_tiers.find_one({"_id": oid(tid)})
+    if not old: raise HTTPException(404, "Not found")
+    await db.cpm_tiers.update_one({"_id": oid(tid)}, {"$set": payload.model_dump()})
+    await log_price_change(user, "cpm_update", tid, {"views": old["views"], "price_inr": old["price_inr"]}, {"views": payload.views, "price_inr": payload.price_inr})
+    return serialize(await db.cpm_tiers.find_one({"_id": oid(tid)}))
+
+@api.delete("/admin/cpm-tiers/{tid}")
+async def delete_cpm(tid: str, user=Depends(require_role("admin"))):
+    old = await db.cpm_tiers.find_one({"_id": oid(tid)})
+    await db.cpm_tiers.delete_one({"_id": oid(tid)})
+    if old: await log_price_change(user, "cpm_delete", tid, old, None)
+    return {"ok": True}
+
+# --- Duration presets ---
+class DurationIn(BaseModel):
+    days: int = Field(ge=1)
+    label: str = ""
+    active: bool = True
+
+@api.get("/admin/duration-options")
+async def list_durations(user=Depends(require_role("admin"))):
+    docs = await db.duration_options.find().sort("days", 1).to_list(50)
+    return serialize_list(docs)
+
+@api.get("/duration-options/public")
+async def public_durations():
+    docs = await db.duration_options.find({"active": True}).sort("days", 1).to_list(50)
+    return serialize_list(docs)
+
+@api.post("/admin/duration-options")
+async def create_duration(payload: DurationIn, user=Depends(require_role("admin"))):
+    doc = {**payload.model_dump(), "created_at": now_iso()}
+    res = await db.duration_options.insert_one(doc)
+    doc.pop("_id", None); doc["id"] = str(res.inserted_id)
+    return doc
+
+@api.delete("/admin/duration-options/{did}")
+async def delete_duration(did: str, user=Depends(require_role("admin"))):
+    await db.duration_options.delete_one({"_id": oid(did)})
+    return {"ok": True}
+
+# --- Discounts ---
+class DiscountIn(BaseModel):
+    code: str
+    kind: str = Field(pattern="^(percent|fixed)$")
+    value: float = Field(ge=0)
+    description: Optional[str] = ""
+    min_amount_inr: float = 0
+    active: bool = True
+
+@api.get("/admin/discounts")
+async def list_discounts(user=Depends(require_role("admin"))):
+    docs = await db.discounts.find().sort("created_at", -1).to_list(200)
+    return serialize_list(docs)
+
+@api.post("/admin/discounts")
+async def create_discount(payload: DiscountIn, user=Depends(require_role("admin"))):
+    doc = {**payload.model_dump(), "code": payload.code.upper(), "created_at": now_iso()}
+    if await db.discounts.find_one({"code": doc["code"]}):
+        raise HTTPException(400, "Discount code already exists")
+    res = await db.discounts.insert_one(doc)
+    doc.pop("_id", None); doc["id"] = str(res.inserted_id)
+    return doc
+
+@api.patch("/admin/discounts/{did}")
+async def update_discount(did: str, payload: DiscountIn, user=Depends(require_role("admin"))):
+    await db.discounts.update_one({"_id": oid(did)}, {"$set": {**payload.model_dump(), "code": payload.code.upper()}})
+    return serialize(await db.discounts.find_one({"_id": oid(did)}))
+
+@api.delete("/admin/discounts/{did}")
+async def delete_discount(did: str, user=Depends(require_role("admin"))):
+    await db.discounts.delete_one({"_id": oid(did)})
+    return {"ok": True}
+
+@api.get("/discounts/validate/{code}")
+async def validate_discount(code: str, user=Depends(require_role("advertiser"))):
+    d = await db.discounts.find_one({"code": code.upper(), "active": True})
+    if not d: raise HTTPException(404, "Invalid or expired code")
+    return serialize(d)
+
+# --- Pricing settings (currency + GST) ---
+class PricingSettingsIn(BaseModel):
+    currency_code: str = "INR"
+    currency_symbol: str = "₹"
+    gst_enabled: bool = True
+    gst_percentage: float = 18.0
+
+@api.get("/admin/pricing-settings")
+async def get_pricing_settings(user=Depends(require_role("admin"))):
+    cfg = await db.pricing_settings.find_one({"_id": "singleton"})
+    if not cfg:
+        default = PricingSettingsIn().model_dump()
+        default["_id"] = "singleton"
+        await db.pricing_settings.insert_one(default)
+        cfg = default
+    cfg.pop("_id", None)
+    return cfg
+
+@api.get("/pricing-settings/public")
+async def public_pricing_settings():
+    cfg = await db.pricing_settings.find_one({"_id": "singleton"})
+    if not cfg:
+        cfg = PricingSettingsIn().model_dump()
+    else:
+        cfg.pop("_id", None)
+    return cfg
+
+@api.patch("/admin/pricing-settings")
+async def update_pricing_settings(payload: PricingSettingsIn, user=Depends(require_role("admin"))):
+    old = await db.pricing_settings.find_one({"_id": "singleton"}) or {}
+    doc = payload.model_dump()
+    await db.pricing_settings.update_one({"_id": "singleton"}, {"$set": doc}, upsert=True)
+    await log_price_change(user, "settings_update", "singleton", {k: old.get(k) for k in doc.keys()}, doc, reason="Settings changed")
+    return doc
+
+# --- Price history ---
+@api.get("/admin/pricing-history")
+async def pricing_history(limit: int = 200, user=Depends(require_role("admin"))):
+    docs = await db.pricing_history.find().sort("at", -1).limit(limit).to_list(limit)
+    return serialize_list(docs)
+
+# --- Custom quote requests ---
+class QuoteRequestIn(BaseModel):
+    autos: int = Field(ge=1)
+    target_city: str = ""
+    duration_days: int = Field(ge=1)
+    estimated_views: int = 0
+    ad_format: str = ""
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    special_requirements: Optional[str] = ""
+    contact_name: Optional[str] = ""
+    contact_phone: Optional[str] = ""
+
+@api.post("/quotes/request")
+async def create_quote_request(payload: QuoteRequestIn, user=Depends(require_role("advertiser"))):
+    doc = {**payload.model_dump(),
+           "advertiser_id": user["id"], "advertiser_email": user["email"],
+           "status": "pending", "admin_price_inr": None, "admin_notes": "",
+           "created_at": now_iso()}
+    res = await db.quote_requests.insert_one(doc)
+    await db.notifications.insert_one({"user_id": user["id"], "type": "quote_requested",
+                                         "message": "Your custom quote request has been received.",
+                                         "read": False, "at": now_iso()})
+    doc.pop("_id", None); doc["id"] = str(res.inserted_id)
+    return doc
+
+@api.get("/quotes/mine")
+async def list_my_quotes(user=Depends(require_role("advertiser"))):
+    docs = await db.quote_requests.find({"advertiser_id": user["id"]}).sort("created_at", -1).to_list(100)
+    return serialize_list(docs)
+
+@api.get("/admin/quotes")
+async def admin_list_quotes(status: Optional[str] = None, user=Depends(require_role("admin"))):
+    q = {"status": status} if status else {}
+    docs = await db.quote_requests.find(q).sort("created_at", -1).to_list(500)
+    return serialize_list(docs)
+
+class QuoteReplyIn(BaseModel):
+    status: str = Field(pattern="^(quoted|approved|rejected)$")
+    admin_price_inr: Optional[float] = None
+    admin_notes: Optional[str] = ""
+
+@api.patch("/admin/quotes/{qid}")
+async def admin_reply_quote(qid: str, payload: QuoteReplyIn, user=Depends(require_role("admin"))):
+    q = await db.quote_requests.find_one({"_id": oid(qid)})
+    if not q: raise HTTPException(404, "Not found")
+    updates = {"status": payload.status, "admin_notes": payload.admin_notes or "", "replied_at": now_iso(), "replied_by": user["email"]}
+    if payload.admin_price_inr is not None:
+        updates["admin_price_inr"] = float(payload.admin_price_inr)
+    await db.quote_requests.update_one({"_id": oid(qid)}, {"$set": updates})
+    await db.notifications.insert_one({"user_id": q["advertiser_id"], "type": "quote_reply",
+                                         "message": f"Your custom quote is now {payload.status}. Price: ₹{payload.admin_price_inr or ''}",
+                                         "read": False, "at": now_iso()})
+    await audit(user, "reply_quote", "quote", qid, updates)
+    return serialize(await db.quote_requests.find_one({"_id": oid(qid)}))
+
+# --- Price calculator ---
+class CalcIn(BaseModel):
+    autos: int = Field(ge=1)
+    duration_days: int = Field(ge=1)
+    estimated_impressions: int = 0
+    pricing_model: str = "per_auto"  # per_auto|per_day|per_campaign|cpm|auto_duration|auto_impressions
+    plan_id: Optional[str] = None
+    discount_code: Optional[str] = None
+
+async def _find_cpm_price(views: int) -> Optional[float]:
+    tiers = await db.cpm_tiers.find({"active": True, "views": {"$lte": views}}).sort("views", -1).to_list(1)
+    if tiers:
+        return float(tiers[0]["price_inr"]) / max(1, tiers[0]["views"]) * views
+    # else use smallest available tier as unit price
+    smallest = await db.cpm_tiers.find({"active": True}).sort("views", 1).to_list(1)
+    if smallest:
+        unit = float(smallest[0]["price_inr"]) / max(1, smallest[0]["views"])
+        return unit * views
+    return None
+
+async def _plan_unit_price(plan) -> float:
+    return float(plan.get("price_inr", 0))
+
+async def _get_price_and_settings():
+    settings = await db.pricing_settings.find_one({"_id": "singleton"}) or PricingSettingsIn().model_dump()
+    settings.pop("_id", None)
+    return settings
+
+@api.post("/pricing/calculate")
+async def calc_price(payload: CalcIn):
+    settings = await _get_price_and_settings()
+    subtotal = 0.0
+    model = payload.pricing_model
+    breakdown = []
+
+    if payload.plan_id:
+        plan = await db.plans.find_one({"_id": oid(payload.plan_id), "active": True})
+        if not plan: raise HTTPException(404, "Plan not found or inactive")
+        pmodel = plan.get("pricing_model", "per_campaign")
+        base = float(plan.get("price_inr", 0))
+        if pmodel == "per_auto":
+            subtotal = base * payload.autos
+            breakdown.append({"label": f"{plan['name']} · ₹{base}/auto × {payload.autos} autos", "amount": subtotal})
+        elif pmodel == "per_day":
+            subtotal = base * payload.duration_days
+            breakdown.append({"label": f"{plan['name']} · ₹{base}/day × {payload.duration_days} days", "amount": subtotal})
+        elif pmodel == "auto_duration":
+            per_auto_per_day = base / max(1, plan.get("autos", 1)) / max(1, plan.get("duration_days", 1))
+            subtotal = per_auto_per_day * payload.autos * payload.duration_days
+            breakdown.append({"label": f"{plan['name']} · {payload.autos} autos × {payload.duration_days} days", "amount": subtotal})
+        else:  # per_campaign default
+            subtotal = base
+            breakdown.append({"label": plan["name"], "amount": subtotal})
+    else:
+        if model == "per_auto":
+            base = float((await db.plans.find_one({"pricing_model": "per_auto", "active": True}) or {}).get("price_inr", 0))
+            subtotal = base * payload.autos * payload.duration_days
+            breakdown.append({"label": f"₹{base}/auto/day × {payload.autos} × {payload.duration_days}", "amount": subtotal})
+        elif model == "per_day":
+            base = float((await db.plans.find_one({"pricing_model": "per_day", "active": True}) or {}).get("price_inr", 0))
+            subtotal = base * payload.duration_days
+            breakdown.append({"label": f"₹{base}/day × {payload.duration_days} days", "amount": subtotal})
+        elif model == "cpm":
+            price = await _find_cpm_price(payload.estimated_impressions or 0)
+            subtotal = price or 0.0
+            breakdown.append({"label": f"CPM · {payload.estimated_impressions:,} impressions", "amount": subtotal})
+        elif model == "auto_impressions":
+            per_auto = float((await db.plans.find_one({"pricing_model": "per_auto", "active": True}) or {}).get("price_inr", 0))
+            cpm = await _find_cpm_price(payload.estimated_impressions or 0) or 0
+            subtotal = per_auto * payload.autos * payload.duration_days + cpm
+            breakdown.append({"label": f"Auto+Impressions", "amount": subtotal})
+        elif model == "auto_duration":
+            per_auto = float((await db.plans.find_one({"pricing_model": "per_auto", "active": True}) or {}).get("price_inr", 0))
+            subtotal = per_auto * payload.autos * payload.duration_days
+            breakdown.append({"label": f"Autos × Duration", "amount": subtotal})
+        else:
+            subtotal = 0.0
+            breakdown.append({"label": "Custom quote", "amount": 0.0})
+
+    # discount
+    discount_amount = 0.0
+    discount_info = None
+    if payload.discount_code:
+        d = await db.discounts.find_one({"code": payload.discount_code.upper(), "active": True})
+        if d and subtotal >= float(d.get("min_amount_inr", 0)):
+            if d["kind"] == "percent":
+                discount_amount = subtotal * float(d["value"]) / 100.0
+            else:
+                discount_amount = min(subtotal, float(d["value"]))
+            discount_info = {"code": d["code"], "kind": d["kind"], "value": d["value"]}
+
+    after_discount = max(0, subtotal - discount_amount)
+    gst_amount = 0.0
+    if settings.get("gst_enabled"):
+        gst_amount = after_discount * float(settings.get("gst_percentage", 18.0)) / 100.0
+    total = after_discount + gst_amount
+    return {
+        "currency": settings.get("currency_code", "INR"),
+        "symbol": settings.get("currency_symbol", "₹"),
+        "subtotal": round(subtotal, 2),
+        "discount": round(discount_amount, 2),
+        "discount_info": discount_info,
+        "gst_enabled": settings.get("gst_enabled", True),
+        "gst_percentage": settings.get("gst_percentage", 18.0),
+        "gst_amount": round(gst_amount, 2),
+        "total": round(total, 2),
+        "breakdown": breakdown,
+        "model": payload.pricing_model,
+    }
+
+# --- Purchase: create campaign with pricing snapshot + Stripe checkout in INR ---
+class PurchaseIn(BaseModel):
+    plan_id: Optional[str] = None
+    autos: int = Field(ge=1)
+    duration_days: int = Field(ge=1)
+    estimated_impressions: int = 0
+    pricing_model: str = "per_auto"
+    discount_code: Optional[str] = None
+    ad_id: Optional[str] = None
+    campaign_name: str
+    target_city: str = ""
+    origin_url: str
+
+@api.post("/pricing/purchase")
+async def purchase_campaign(payload: PurchaseIn, request: Request, user=Depends(require_role("advertiser"))):
+    # Compute price
+    calc = await calc_price(CalcIn(
+        autos=payload.autos, duration_days=payload.duration_days,
+        estimated_impressions=payload.estimated_impressions,
+        pricing_model=payload.pricing_model, plan_id=payload.plan_id,
+        discount_code=payload.discount_code
+    ))
+    if calc["total"] <= 0:
+        raise HTTPException(400, "Price calculation yielded 0 — check pricing config.")
+
+    # Snapshot on campaign
+    start = datetime.now(timezone.utc).date()
+    end = start + timedelta(days=payload.duration_days)
+    campaign_doc = {
+        "name": payload.campaign_name, "advertiser_id": user["id"],
+        "ad_id": payload.ad_id or "", "start_date": start.isoformat(), "end_date": end.isoformat(),
+        "start_time": "00:00", "end_time": "23:59", "budget": calc["total"],
+        "objective": "Awareness", "target_locations": [payload.target_city] if payload.target_city else [],
+        "target_cities": [payload.target_city] if payload.target_city else [],
+        "target_devices": [], "frequency": 3, "status": "Draft",
+        "pricing_snapshot": {
+            "plan_id": payload.plan_id, "autos": payload.autos, "duration_days": payload.duration_days,
+            "estimated_impressions": payload.estimated_impressions,
+            "pricing_model": payload.pricing_model, "discount_code": payload.discount_code,
+            "subtotal": calc["subtotal"], "discount": calc["discount"],
+            "gst_percentage": calc["gst_percentage"], "gst_amount": calc["gst_amount"],
+            "total_inr": calc["total"], "currency": "INR", "at": now_iso()
+        },
+        "created_at": now_iso()
+    }
+    c_res = await db.campaigns.insert_one(campaign_doc)
+    campaign_id = str(c_res.inserted_id)
+
+    # Stripe checkout in INR
+    if not _STRIPE_AVAILABLE:
+        raise HTTPException(500, "Stripe not available")
+    host_url = str(request.base_url)
+    webhook_url = f"{host_url.rstrip('/')}/api/webhook/stripe"
+    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+    origin = payload.origin_url.rstrip("/")
+    req = CheckoutSessionRequest(
+        amount=float(calc["total"]), currency="inr",
+        success_url=f"{origin}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{origin}/payment/cancel",
+        metadata={"user_id": user["id"], "campaign_id": campaign_id, "kind": "campaign_purchase"}
+    )
+    session = await stripe_checkout.create_checkout_session(req)
+
+    await db.payment_transactions.insert_one({
+        "session_id": session.session_id, "user_id": user["id"], "campaign_id": campaign_id,
+        "amount": float(calc["total"]), "currency": "inr",
+        "status": "initiated", "payment_status": "pending",
+        "snapshot": campaign_doc["pricing_snapshot"], "campaign_name": payload.campaign_name,
+        "created_at": now_iso(), "updated_at": now_iso()
+    })
+    return {"checkout_url": session.url, "session_id": session.session_id, "campaign_id": campaign_id, "amount_inr": calc["total"]}
+
+@api.get("/invoices/{session_id}")
+async def get_invoice(session_id: str, user=Depends(get_current_user)):
+    tx = await db.payment_transactions.find_one({"session_id": session_id})
+    if not tx: raise HTTPException(404, "Invoice not found")
+    if user["role"] != "admin" and tx.get("user_id") != user["id"]:
+        raise HTTPException(403, "Not your invoice")
+    campaign = None
+    if tx.get("campaign_id"):
+        c = await db.campaigns.find_one({"_id": oid(tx["campaign_id"])})
+        campaign = serialize(c)
+    return {"transaction": serialize(tx), "campaign": campaign, "invoice_number": f"OWM-{tx['created_at'][:10].replace('-','')}-{session_id[-6:].upper()}"}
+
+
 app.include_router(api)
 
 app.add_middleware(

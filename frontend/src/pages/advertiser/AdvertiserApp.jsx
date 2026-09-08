@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import Shell from "@/pages/Shell";
-import { LayoutDashboard, Upload, Megaphone, BarChart3, Wallet, Bell, Sparkles } from "lucide-react";
+import { LayoutDashboard, Upload, Megaphone, BarChart3, Wallet, Bell, Sparkles, IndianRupee } from "lucide-react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import api from "@/lib/api";
 import { toast } from "sonner";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
+import AdvertiserPricing from "@/pages/advertiser/AdvertiserPricing";
+import { formatINR } from "@/lib/inr";
 
 const nav = [
   { key: "dash", to: "/advertiser", label: "Dashboard", icon: LayoutDashboard },
+  { key: "pricing", to: "/advertiser/pricing", label: "Pricing & Buy", icon: IndianRupee },
   { key: "ads", to: "/advertiser/ads", label: "My Ads", icon: Upload },
   { key: "campaigns", to: "/advertiser/campaigns", label: "Campaigns", icon: Megaphone },
   { key: "analytics", to: "/advertiser/analytics", label: "Advanced Analytics", icon: Sparkles },
@@ -311,6 +314,7 @@ export default function AdvertiserApp() {
     <Shell nav={nav} title="Advertiser">
       <Routes>
         <Route index element={<Dashboard />} />
+        <Route path="pricing" element={<AdvertiserPricing />} />
         <Route path="ads" element={<MyAds />} />
         <Route path="campaigns" element={<Campaigns />} />
         <Route path="analytics" element={<Analytics />} />

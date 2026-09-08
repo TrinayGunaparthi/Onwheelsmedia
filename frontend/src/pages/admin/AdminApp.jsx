@@ -31,6 +31,7 @@ import ApiKeys from "@/pages/admin/sections/ApiKeys";
 import UsersAndRoles from "@/pages/admin/sections/UsersAndRoles";
 import Alerts from "@/pages/admin/sections/Alerts";
 import RemoteCommands from "@/pages/admin/sections/RemoteCommands";
+import Quotes from "@/pages/admin/sections/Quotes";
 
 const nav = [
   { key: "bi", to: "/admin", label: "Executive BI", icon: TrendingUp },
@@ -56,6 +57,7 @@ const nav = [
   { key: "reports", to: "/admin/reports", label: "Reports", icon: BarChart3 },
   { key: "revenue", to: "/admin/revenue", label: "Revenue", icon: DollarSign },
   { key: "pricing", to: "/admin/pricing", label: "Pricing Engine", icon: Sparkles },
+  { key: "quotes", to: "/admin/quotes", label: "Custom Quotes", icon: Sparkles },
   { key: "earnings", to: "/admin/earnings", label: "Driver Earnings", icon: Wallet },
   { key: "payments", to: "/admin/payments", label: "Invoices", icon: Wallet },
   { key: "users", to: "/admin/users", label: "Team & Roles", icon: Users },
@@ -93,6 +95,7 @@ export default function AdminApp() {
         <Route path="reports" element={<Reports />} />
         <Route path="revenue" element={<Revenue />} />
         <Route path="pricing" element={<Pricing />} />
+        <Route path="quotes" element={<Quotes />} />
         <Route path="earnings" element={<Earnings />} />
         <Route path="payments" element={<Payments />} />
         <Route path="users" element={<UsersAndRoles />} />
