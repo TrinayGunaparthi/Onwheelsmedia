@@ -1,0 +1,111 @@
+import pytest
+
+from quota_entitlements import build_paid_view_entitlement
+
+
+def make_transaction(**updates):
+    tx = {
+        "session_id": "stripe-session-123",
+        "campaign_id": "campaign-abc",
+        "user_id": "advertiser-1",
+        "status": "completed",
+        "payment_status": "paid",
+        "amount": 1200.0,
+        "currency": "inr",
+        "quota_entitlement_views": 50,
+    }
+    tx.update(updates)
+    return tx
+
+
+def make_campaign(**updates):
+    campaign = {
+        "_id": "campaign-abc",
+        "advertiser_id": "advertiser-1",
+    }
+    campaign.update(updates)
+    return campaign
+
+
+def test_paid_transaction_creates_entitlement_with_exact_view_quantity():
+    result = build_paid_view_entitlement(
+        make_transaction(),
+        make_campaign(),
+        created_at="2026-11-19T00:00:00Z",
+    )
+    assert result["purchased_views"] == 50
+    assert result["remaining_views"] == 50
+    assert result["allocated_views"] == 0
+    assert result["completed_views"] == 0
+    assert result["reserved_views"] == 0
+    assert result["status"] == "active"
+    assert result["entitlement_id"] == "stripe-session-123"
+    assert result["created_at"] == "2026-11-19T00:00:00Z"
+
+
+@pytest.mark.parametrize("payment_status", ["pending", "unpaid", "failed", None])
+def test_non_paid_transaction_rejected(payment_status):
+    with pytest.raises(ValueError, match="must be paid"):
+        build_paid_view_entitlement(
+            make_transaction(payment_status=payment_status),
+            make_campaign(),
+        )
+
+
+@pytest.mark.parametrize("status", ["initiated", "processing", "cancelled", None])
+def test_non_completed_transaction_rejected(status):
+    with pytest.raises(ValueError, match="must be completed"):
+        build_paid_view_entitlement(
+            make_transaction(status=status),
+            make_campaign(),
+        )
+
+
+def test_campaign_mismatch_rejected():
+    with pytest.raises(ValueError, match="campaign does not match"):
+        build_paid_view_entitlement(
+            make_transaction(campaign_id="other-campaign"),
+            make_campaign(),
+        )
+
+
+def test_advertiser_mismatch_rejected():
+    with pytest.raises(ValueError, match="advertiser does not match"):
+        build_paid_view_entitlement(
+            make_transaction(user_id="different-advertiser"),
+            make_campaign(),
+        )
+
+
+@pytest.mark.parametrize("views", [0, -1, None, "50", 50.0, True])
+def test_invalid_entitlement_view_quantity_rejected(views):
+    with pytest.raises(ValueError, match="positive integer"):
+        build_paid_view_entitlement(
+            make_transaction(quota_entitlement_views=views),
+            make_campaign(),
+        )
+
+
+def test_estimated_impressions_alone_is_not_entitlement():
+    tx = make_transaction()
+    tx.pop("quota_entitlement_views")
+    tx["snapshot"] = {"estimated_impressions": 999999}
+    with pytest.raises(ValueError, match="positive integer"):
+        build_paid_view_entitlement(tx, make_campaign())
+
+
+@pytest.mark.parametrize("amount", [0, -1, None, "1200", True])
+def test_invalid_paid_amount_rejected(amount):
+    with pytest.raises(ValueError, match="amount must be positive"):
+        build_paid_view_entitlement(
+            make_transaction(amount=amount),
+            make_campaign(),
+        )
+
+
+def test_missing_session_id_rejected():
+    with pytest.raises(ValueError, match="session_id is required"):
+        build_paid_view_entitlement(
+            make_transaction(session_id=""),
+            make_campaign(),
+        )
