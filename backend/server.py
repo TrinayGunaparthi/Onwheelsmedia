@@ -25,7 +25,21 @@ logger = logging.getLogger("owm")
 
 MONGO_URL = os.environ['MONGO_URL']
 DB_NAME = os.environ['DB_NAME']
-JWT_SECRET = os.environ.get('JWT_SECRET', 'dev-secret')
+# ---------- setup / security ----------
+JWT_SECRET = os.environ.get("JWT_SECRET", "").strip()
+
+if not JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET is missing. Configure a secure JWT_SECRET "
+        "environment variable before starting the backend."
+    )
+
+if len(JWT_SECRET) < 32:
+    raise RuntimeError(
+        "JWT_SECRET must contain at least 32 characters."
+    )
+
+JWT_ALGORITHM = "HS256"
 JWT_ALGORITHM = "HS256"
 
 client = AsyncIOMotorClient(MONGO_URL)
