@@ -1,0 +1,34 @@
+import pytest
+from quota_purchase_entitlements import resolve_purchase_view_entitlement
+
+@pytest.mark.parametrize("model", ["cpm", "auto_impressions"])
+def test_impression_models_resolve_quantity(model):
+    assert resolve_purchase_view_entitlement(pricing_model=model, requested_impressions=5000) == 5000
+
+@pytest.mark.parametrize("model", ["per_auto", "per_day", "per_campaign", "auto_duration", "unknown"])
+def test_other_models_without_plan_get_zero(model):
+    assert resolve_purchase_view_entitlement(pricing_model=model, requested_impressions=9000) == 0
+
+def test_explicit_plan_included_views_are_authoritative():
+    plan = {"name": "Starter", "price_inr": 1000, "included_views": 1200}
+    assert resolve_purchase_view_entitlement(pricing_model="cpm", requested_impressions=999999, selected_plan=plan) == 1200
+
+def test_plan_missing_views_does_not_infer_from_price_or_estimate():
+    plan = {"name": "Basic", "price_inr": 5000}
+    assert resolve_purchase_view_entitlement(pricing_model="cpm", requested_impressions=8000, selected_plan=plan) == 0
+
+@pytest.mark.parametrize("bad", [True, False, None, "500", 5.5, -1])
+def test_impression_models_reject_invalid_quantity(bad):
+    with pytest.raises(ValueError):
+        resolve_purchase_view_entitlement(pricing_model="cpm", requested_impressions=bad)
+
+@pytest.mark.parametrize("bad", [True, None, "10", 1.5, -1])
+def test_plan_rejects_invalid_included_views(bad):
+    with pytest.raises(ValueError):
+        resolve_purchase_view_entitlement(pricing_model="per_campaign", selected_plan={"included_views": bad})
+
+def test_plan_zero_views_allowed():
+    assert resolve_purchase_view_entitlement(pricing_model="per_campaign", selected_plan={"included_views": 0}) == 0
+
+def test_plan_missing_views_defaults_zero():
+    assert resolve_purchase_view_entitlement(pricing_model="per_campaign", selected_plan={}) == 0
