@@ -1,0 +1,25 @@
+"""Phase 2.4: resolve server-priced purchase view entitlement.""" 
+from typing import Any, Dict, Optional
+
+IMPRESSION_PRICING_MODELS = {"cpm", "auto_impressions"}
+
+def resolve_purchase_view_entitlement(*, pricing_model: str,
+                                     requested_impressions: Any = 0,
+                                     selected_plan: Optional[Dict[str, Any]] = None) -> int:
+    """Resolve views only from impression pricing or an explicit plan quota.
+
+    This helper does not grant quota, persist records, or activate campaigns.
+    """
+    if selected_plan is not None:
+        included = selected_plan.get("included_views", 0)
+        if isinstance(included, bool) or not isinstance(included, int) or included < 0:
+            raise ValueError("plan included_views must be a non-negative integer")
+        return included
+
+    if pricing_model not in IMPRESSION_PRICING_MODELS:
+        return 0
+
+    views = requested_impressions
+    if isinstance(views, bool) or not isinstance(views, int) or views <= 0:
+        raise ValueError("impression-based purchase requires a positive integer quantity")
+    return views
